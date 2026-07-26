@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#172026" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./style.css" />
+    <title>GaussCapture Mobile</title>
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <div>
+          <h1>GaussCapture Mobile</h1>
+          <p>Simple phone capture app for static rooms and objects.</p>
+        </div>
+        <span id="status" class="badge">Idle</span>
+      </header>
+
+      <section class="preview">
+        <video id="preview" playsinline muted autoplay></video>
+        <div class="timer" id="timer">00:00</div>
+      </section>
+
+      <section class="panel">
+        <label>
+          Desktop API URL
+          <input id="apiBase" placeholder="http://192.168.1.20:7860" />
+        </label>
+        <label>
+          Existing Project ID
+          <input id="projectId" placeholder="Leave empty to create a project" />
+        </label>
+        <label>
+          Session Name
+          <input id="sessionName" value="Phone Capture" />
+        </label>
+        <label>
+          Target Type
+          <select id="targetType">
+            <option value="room">Room / Interior</option>
+            <option value="object">Object</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </label>
+        <label class="check">
+          <input id="recordAudio" type="checkbox" />
+          Record audio
+        </label>
+      </section>
+
+      <section class="actions">
+        <button id="startCamera">Start Camera</button>
+        <button id="motionPermission">Enable Motion</button>
+        <button id="startRecord" class="primary" disabled>Record</button>
+        <button id="stopRecord" disabled>Stop</button>
+      </section>
+
+      <section class="actions">
+        <button id="downloadPack" disabled>Download .capturepack</button>
+        <button id="uploadVideo" disabled>Upload Video</button>
+      </section>
+
+      <section class="panel">
+        <h2>Capture Info</h2>
+        <dl>
+          <div><dt>Video</dt><dd id="videoInfo">None</dd></div>
+          <div><dt>Motion samples</dt><dd id="motionInfo">0</dd></div>
+          <div><dt>Orientation samples</dt><dd id="orientationInfo">0</dd></div>
+          <div><dt>Project</dt><dd id="projectInfo">Not uploaded</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>Log</h2>
+        <pre id="log"></pre>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>
+

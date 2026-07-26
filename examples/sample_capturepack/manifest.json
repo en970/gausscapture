@@ -1,0 +1,37 @@
+{
+  "capturepack_version": "0.1",
+  "session_id": "sample-session",
+  "session_name": "Sample CapturePack",
+  "capture_type": "static_scene",
+  "target_type": "unknown",
+  "created_at": "2026-06-05T00:00:00Z",
+  "device": {
+    "manufacturer": "Apple",
+    "model": "iPhone",
+    "os": "iOS",
+    "app_version": "0.1"
+  },
+  "video": {
+    "main_file": "video/main_video.mp4",
+    "duration_sec": null,
+    "width": null,
+    "height": null,
+    "fps": null,
+    "codec": "unknown",
+    "bitrate": null
+  },
+  "capture_settings": {
+    "exposure_locked": true,
+    "white_balance_locked": true,
+    "focus_locked": true,
+    "storage_mode": "phone"
+  },
+  "metadata_files": {
+    "intrinsics": "camera/intrinsics.json",
+    "poses": "motion/arkit_arcore_poses.json",
+    "imu": "motion/imu_gyro.json",
+    "light": "environment/light_estimation.json",
+    "audio": null
+  }
+}
+

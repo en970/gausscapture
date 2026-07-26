@@ -1,0 +1,10 @@
+{
+  "name": "GaussCapture Mobile",
+  "short_name": "GaussCapture",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f7f8",
+  "theme_color": "#172026",
+  "icons": []
+}
+

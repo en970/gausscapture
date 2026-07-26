@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+backend/data/projects/*
+!backend/data/projects/.gitkeep
+backend/data/temp/*
+!backend/data/temp/.gitkeep
+backend/data/test_projects/
+backend/data/jobs/
+backend/data/settings.json
+backend/static_placeholder/
+frontend/node_modules/
+frontend/dist/
+.DS_Store
+*.log

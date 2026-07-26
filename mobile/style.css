@@ -1,0 +1,49 @@
+:root {
+  color: #172026;
+  background: #f4f7f8;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select { font: inherit; letter-spacing: 0; }
+.app { width: min(760px, 100%); margin: 0 auto; padding: 16px; display: grid; gap: 14px; }
+header { display: flex; justify-content: space-between; gap: 14px; align-items: start; padding-top: env(safe-area-inset-top); }
+h1 { margin: 0 0 4px; font-size: 24px; }
+h2 { margin: 0 0 10px; font-size: 16px; }
+p { margin: 0; color: #607179; }
+.badge { background: #dfeeed; color: #176b5f; padding: 6px 10px; border-radius: 999px; font-weight: 700; white-space: nowrap; }
+.preview { position: relative; background: #0e1417; border-radius: 8px; overflow: hidden; min-height: 280px; }
+video { width: 100%; min-height: 280px; display: block; object-fit: cover; background: #0e1417; }
+.timer { position: absolute; right: 12px; bottom: 12px; background: #000b; color: #fff; border-radius: 7px; padding: 6px 9px; font-weight: 800; }
+.panel { background: #fff; border: 1px solid #dbe5e8; border-radius: 8px; padding: 14px; display: grid; gap: 10px; }
+label { display: grid; gap: 6px; color: #4f6269; }
+label.check { display: flex; align-items: center; flex-direction: row; color: #172026; }
+input, select {
+  min-height: 42px;
+  border: 1px solid #c9d5d9;
+  border-radius: 7px;
+  padding: 9px 10px;
+  width: 100%;
+  background: white;
+}
+.actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+button {
+  min-height: 44px;
+  border-radius: 7px;
+  border: 1px solid #c9d5d9;
+  background: #fff;
+  color: #172026;
+  font-weight: 700;
+}
+button.primary { background: #176b5f; border-color: #176b5f; color: white; }
+button:disabled { opacity: .5; }
+dl { margin: 0; display: grid; gap: 8px; }
+dl div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf2f3; padding-bottom: 8px; }
+dt { color: #607179; }
+dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+pre { margin: 0; background: #101619; color: #d7f5ff; border-radius: 7px; padding: 10px; min-height: 110px; max-height: 240px; overflow: auto; white-space: pre-wrap; }
+@media (max-width: 480px) {
+  .actions { grid-template-columns: 1fr; }
+}
+
