@@ -26,6 +26,11 @@ let chunks = [];
 let recordedBlob = null;
 let recordedMime = "";
 let startedAt = 0;
+// Sensor samples must share a clock with the video, and Date.now() is not it:
+// it is wall time and can jump. performance.now() is monotonic, so recording
+// start is stamped on both clocks and every sample is expressed as
+// milliseconds since that instant. Without this the logs are unalignable.
+let recordingPerfStart = 0;
 let timerId = 0;
 let motionLog = [];
 let orientationLog = [];
@@ -116,6 +121,7 @@ els.startRecord.addEventListener("click", () => {
   };
   recorder.start(1000);
   startedAt = Date.now();
+  recordingPerfStart = performance.now();
   timerId = window.setInterval(updateTimer, 250);
   els.startRecord.disabled = true;
   els.stopRecord.disabled = false;
@@ -174,7 +180,8 @@ els.uploadVideo.addEventListener("click", async () => {
 function onMotion(event) {
   if (!recorder || recorder.state !== "recording") return;
   motionLog.push({
-    t_ms: Math.round(performance.now()),
+    // Milliseconds since recording started, so t=0 is video frame 0.
+    t_ms: Math.round(performance.now() - recordingPerfStart),
     acceleration: event.acceleration,
     accelerationIncludingGravity: event.accelerationIncludingGravity,
     rotationRate: event.rotationRate,
@@ -186,7 +193,7 @@ function onMotion(event) {
 function onOrientation(event) {
   if (!recorder || recorder.state !== "recording") return;
   orientationLog.push({
-    t_ms: Math.round(performance.now()),
+    t_ms: Math.round(performance.now() - recordingPerfStart),
     alpha: event.alpha,
     beta: event.beta,
     gamma: event.gamma,
@@ -256,7 +263,18 @@ async function buildCapturePack() {
     camera_settings: cameraSettings,
     note: "Browser APIs do not expose calibrated intrinsics in this minimal app."
   };
-  const imu = { source: "DeviceMotionEvent", samples: motionLog, orientation_samples: orientationLog };
+  const imu = {
+    source: "DeviceMotionEvent",
+    // Declared explicitly so a consumer never has to guess which clock these
+    // timestamps came from.
+    time_base: "milliseconds_since_recording_start",
+    recording_started_at: new Date(startedAt).toISOString(),
+    sample_rate_note:
+      "DeviceMotionEvent fires at 10-60 Hz depending on browser and device, and iOS requires " +
+      "an explicit permission grant. Treat the rate as variable and read event.interval.",
+    samples: motionLog,
+    orientation_samples: orientationLog
+  };
   const warnings = {
     warnings: [
       "Browser capture does not provide calibrated camera intrinsics.",

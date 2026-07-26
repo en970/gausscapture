@@ -1,85 +1,88 @@
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
-
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from backend.config import DATA_DIR
-from backend.core.capturepack import create_minimal_capturepack, import_capturepack_archive, validate_capturepack
-from backend.core.preview_builder import import_training_result
-from backend.core.project_manager import PROJECT_STATUS_IMPORTED, PROJECT_STATUS_PREVIEW, PROJECT_STATUS_TRAINED, project_manager
-from backend.core.video_importer import is_video_file
+from backend.deps import get_project, save_upload, store, to_http
+from gausscapture.errors import GaussCaptureError
+from gausscapture.export.preview import MODEL_SUFFIXES, import_training_result
+from gausscapture.ingest.video import VIDEO_EXTENSIONS, copy_video_into_pack, probe_video
+from gausscapture.pack import archive, manifest
+from gausscapture.project import STATUS_IMPORTED, STATUS_PREVIEW
 
 router = APIRouter(prefix="/api/projects/{project_id}/import", tags=["import"])
 
 
 @router.post("/video")
 def import_video(project_id: str, file: UploadFile = File(...)):
-    project = _project(project_id)
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}:
-        raise HTTPException(status_code=400, detail="Upload must be a video file")
-    temp = _save_upload(file, suffix)
+    project = get_project(project_id)
+    temp = save_upload(file, VIDEO_EXTENSIONS)
     try:
-        manifest = create_minimal_capturepack(Path(project["path"]), temp, project["name"], project.get("target_type", "unknown"))
-        project = project_manager.update_project(project_id, status=PROJECT_STATUS_IMPORTED, last_step="Video imported as minimal CapturePack")
-        return {"project": project, "manifest": manifest, "warnings": ["Minimal CapturePack created from video. Camera pose metadata is not available."], "errors": []}
+        for name in manifest.REQUIRED_DIRS:
+            (project.capturepack_dir / name).mkdir(parents=True, exist_ok=True)
+        video_path = copy_video_into_pack(temp, project.path)
+        info = probe_video(video_path)
+        pack_manifest = manifest.create_minimal_manifest(
+            video_relpath=f"video/{video_path.name}",
+            info=info,
+            session_name=project.name,
+            target_type=project.target_type,
+        )
+        manifest.write_manifest(project.capturepack_dir, pack_manifest)
+        archive.write_checksums(project.capturepack_dir)
+        updated = store.update(
+            project_id, status=STATUS_IMPORTED, last_step="Video imported as minimal CapturePack"
+        )
+        return {
+            "project": updated.to_dict(),
+            "manifest": pack_manifest,
+            "warnings": [
+                "Minimal CapturePack created from a video. No camera intrinsics or poses are "
+                "available, so COLMAP will be required."
+            ],
+            "errors": [],
+        }
+    except GaussCaptureError as exc:
+        raise to_http(exc) from exc
     finally:
         temp.unlink(missing_ok=True)
 
 
 @router.post("/capturepack")
 def import_capturepack(project_id: str, file: UploadFile = File(...)):
-    project = _project(project_id)
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in {".capturepack", ".zip"}:
-        raise HTTPException(status_code=400, detail="Upload must be .capturepack or .zip")
-    temp = _save_upload(file, suffix)
+    project = get_project(project_id)
+    temp = save_upload(file, {".capturepack", ".zip"})
     try:
-        result = import_capturepack_archive(Path(project["path"]), temp)
+        result = archive.import_archive(project.path, temp)
         if not result["valid"]:
-            raise HTTPException(status_code=400, detail={"errors": result["errors"], "warnings": result["warnings"]})
-        project = project_manager.update_project(project_id, status=PROJECT_STATUS_IMPORTED, last_step="CapturePack imported")
-        return {"project": project, **result}
+            raise HTTPException(
+                status_code=400,
+                detail={"errors": result["errors"], "warnings": result["warnings"]},
+            )
+        updated = store.update(project_id, status=STATUS_IMPORTED, last_step="CapturePack imported")
+        result.pop("manifest", None)
+        return {"project": updated.to_dict(), **result}
+    except GaussCaptureError as exc:
+        raise to_http(exc) from exc
     finally:
         temp.unlink(missing_ok=True)
 
 
 @router.post("/training-result")
 def import_training(project_id: str, file: UploadFile = File(...)):
-    project = _project(project_id)
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in {".zip", ".ply", ".splat", ".ksplat"}:
-        raise HTTPException(status_code=400, detail="Upload must be .zip, .ply, .splat, or .ksplat")
-    temp = _save_upload(file, suffix)
+    project = get_project(project_id)
+    temp = save_upload(file, {".zip", *MODEL_SUFFIXES})
     try:
-        result = import_training_result(Path(project["path"]), temp)
-        project = project_manager.update_project(project_id, status=PROJECT_STATUS_PREVIEW, last_step="Training result imported")
-        return {"project": project, **result}
+        result = import_training_result(project.path, temp)
+        updated = store.update(
+            project_id, status=STATUS_PREVIEW, last_step="Training result imported"
+        )
+        return {"project": updated.to_dict(), **result}
+    except GaussCaptureError as exc:
+        raise to_http(exc) from exc
     finally:
         temp.unlink(missing_ok=True)
 
 
 @router.get("/validate")
 def validate_current_capturepack(project_id: str):
-    project = _project(project_id)
-    return validate_capturepack(Path(project["path"]) / "capturepack")
-
-
-def _project(project_id: str) -> dict:
-    try:
-        return project_manager.get_project(project_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-def _save_upload(file: UploadFile, suffix: str) -> Path:
-    temp_dir = DATA_DIR / "temp"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    target = temp_dir / f"upload_{file.filename or 'file'}"
-    if not target.suffix:
-        target = target.with_suffix(suffix)
-    with target.open("wb") as handle:
-        shutil.copyfileobj(file.file, handle)
-    return target
+    return manifest.validate(get_project(project_id).capturepack_dir)

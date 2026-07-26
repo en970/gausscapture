@@ -15,11 +15,11 @@
 
 | | |
 |---|---|
-| Works today | Video import, CapturePack archive, OpenCV quality analysis, frame extraction, COLMAP wrapper, Colab dataset export, trained-model import, web preview, export bundles, mobile capture PWA |
-| Known broken | Local training invocation writes the wrong dataset layout — it cannot succeed against a standard trainer. COLMAP runs without `--ImageReader.single_camera`. Quality thresholds are unvalidated constants. The PWA stamps IMU and video with different clock epochs, so sensor logs cannot be aligned to frames. |
+| Works today | `pip`-installable core library and CLI, video import, CapturePack archive with checksum verification, capture telemetry, frame extraction, COLMAP wrapper, trainer-ready dataset assembly, Colab export, trained-model import, web preview, export bundles, mobile capture PWA |
+| Still unvalidated | The quality score's weights are a documented heuristic, not a fitted predictor. Establishing whether these signals actually predict reconstruction quality is [the research programme](docs/RESEARCH.md#7-the-contribution), not a solved problem. |
 | Not supported | Dynamic scenes. See [why](docs/RESEARCH.md#5-the-4d-question-answered-honestly). |
 
-Every item in "known broken" is diagnosed in [`docs/RESEARCH.md §2`](docs/RESEARCH.md) and scheduled in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Recently fixed, and worth naming because they were silent: the trainer was handed a dataset layout no trainer accepts, so local training had never worked; COLMAP ran without `--ImageReader.single_camera` on single-camera video; blur rejection used an absolute Laplacian threshold on a resolution- and content-dependent measure; and the capture PWA stamped IMU samples and video start with different clock epochs, making the sensor logs unalignable.
 
 ---
 
@@ -44,6 +44,38 @@ Everything else here — the pipeline, the container format, the viewer — exis
 - **Honest about limits.** Where the physics says no, this project says no and shows the numbers.
 
 ---
+
+## The library and CLI
+
+Everything the GUI does is reachable from Python and from the command line, with
+no server running. That is what makes unattended batch evaluation possible — and
+it is the part under active development.
+
+```bash
+pip install -e .
+
+gausscapture doctor                      # what's installed, what's missing
+gausscapture import capture.mp4 --name "living room"
+gausscapture telemetry <project>         # capture-quality report
+gausscapture frames <project> --preset balanced
+gausscapture pose <project>              # COLMAP
+gausscapture dataset <project>           # images/ + sparse/0/, ready for a trainer
+gausscapture run <project>               # all of the above in one pass
+```
+
+Progress goes to stderr and data to stdout, so reports pipe cleanly:
+
+```bash
+gausscapture telemetry <project> --json | jq '.vol_p10, .score'
+```
+
+```python
+from gausscapture import ProjectStore
+from gausscapture.telemetry import analyze_capture
+
+report = analyze_capture(ProjectStore().list()[0].path)
+print(report.vol_p10, report.blurry_frame_ratio, report.score)
+```
 
 ## Quick start
 

@@ -1,17 +1,35 @@
+"""Background jobs.
+
+This is server infrastructure, not part of the core library: it exists so the
+browser can poll a long-running operation. ``Job`` satisfies
+:class:`gausscapture.progress.Progress`, so route handlers hand a job straight
+to a core function and progress flows back without an adapter.
+"""
+
 from __future__ import annotations
 
 import json
 import threading
 import traceback
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from backend.config import DATA_DIR
-from backend.core.logging_utils import append_log, utc_now
+from gausscapture.config import get_settings
+from gausscapture.util.log import append_log, utc_now
+
+DATA_DIR = Path(get_settings().projects_dir).parent
+JOB_HISTORY_DIR = DATA_DIR / "jobs"
+
+#: Keep the tail of a job's log in memory and on disk; a COLMAP run can emit
+#: tens of thousands of lines and none of them help after the fact.
+MAX_PERSISTED_LOG_LINES = 1000
 
 
 class Job:
+    """One background operation, pollable over HTTP."""
+
     def __init__(self, kind: str, project_id: str | None = None, log_path: Path | None = None):
         self.id = str(uuid.uuid4())
         self.kind = kind
@@ -25,6 +43,26 @@ class Job:
         self.result: dict[str, Any] | None = None
         self.logs: list[str] = []
         self.log_path = log_path
+
+    # --- Progress protocol ---------------------------------------------------
+
+    def update(self, percent: int, message: str | None = None) -> None:
+        self.progress = max(0, min(100, int(percent)))
+        if message:
+            self.current_step = message
+            self.log(message)
+        self.updated_at = utc_now()
+
+    def log(self, message: str) -> None:
+        self.logs.append(message.rstrip())
+        self.updated_at = utc_now()
+        if self.log_path:
+            append_log(self.log_path, message)
+
+    #: Retained so existing callers keep working.
+    set_progress = update
+
+    # --- serialisation -------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,26 +78,12 @@ class Job:
             "result": self.result,
         }
 
-    def log(self, message: str) -> None:
-        line = f"{message.rstrip()}"
-        self.logs.append(line)
-        self.updated_at = utc_now()
-        if self.log_path:
-            append_log(self.log_path, line)
-
-    def set_progress(self, progress: int, step: str | None = None) -> None:
-        self.progress = max(0, min(100, int(progress)))
-        if step:
-            self.current_step = step
-            self.log(step)
-        self.updated_at = utc_now()
-
 
 class JobManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self.jobs: dict[str, Job] = {}
         self.lock = threading.Lock()
-        self.history_dir = DATA_DIR / "jobs"
+        self.history_dir = JOB_HISTORY_DIR
         self.history_dir.mkdir(parents=True, exist_ok=True)
 
     def start(
@@ -75,20 +99,28 @@ class JobManager:
         job = Job(kind=kind, project_id=project_id, log_path=log_path)
         with self.lock:
             self.jobs[job.id] = job
-        thread = threading.Thread(target=self._run, args=(job, func, args, kwargs or {}), daemon=True)
+        thread = threading.Thread(
+            target=self._run, args=(job, func, args, kwargs or {}), daemon=True
+        )
         thread.start()
         return job
 
-    def _run(self, job: Job, func: Callable[..., dict[str, Any] | None], args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    def _run(
+        self,
+        job: Job,
+        func: Callable[..., dict[str, Any] | None],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> None:
         job.status = "running"
-        job.set_progress(1, "Started")
+        job.update(1, "Started")
         self._persist(job)
         try:
             result = func(job, *args, **kwargs)
             job.result = result or {}
             job.status = "success"
-            job.set_progress(100, "Completed")
-        except Exception as exc:
+            job.update(100, "Completed")
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client
             job.status = "error"
             job.error = str(exc)
             job.current_step = "Error"
@@ -110,14 +142,14 @@ class JobManager:
         job = self.jobs.get(job_id)
         if job:
             return "\n".join(job.logs)
-        data = self.get(job_id)
-        return "\n".join(data.get("logs", []))
+        return "\n".join(self.get(job_id).get("logs", []))
 
     def _persist(self, job: Job) -> None:
         data = job.to_dict()
-        data["logs"] = job.logs[-1000:]
-        (self.history_dir / f"{job.id}.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+        data["logs"] = job.logs[-MAX_PERSISTED_LOG_LINES:]
+        (self.history_dir / f"{job.id}.json").write_text(
+            json.dumps(data, indent=2, default=str), encoding="utf-8"
+        )
 
 
 job_manager = JobManager()
-
