@@ -3,6 +3,9 @@
 **Turn a phone video into a 3D Gaussian splat, entirely on your own machine — and know whether the capture was good enough *before* you spend an hour training it.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Project site](https://img.shields.io/badge/site-en970.github.io%2Fgausscapture-8a4f2d)](https://en970.github.io/gausscapture/)
+
+**[en970.github.io/gausscapture](https://en970.github.io/gausscapture/)** — project page, with the argument and the numbers.
 
 ---
 
