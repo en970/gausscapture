@@ -115,7 +115,11 @@ class ProjectStore:
     def __init__(self, projects_dir: Path | str | None = None, settings: Settings | None = None):
         if projects_dir is None:
             projects_dir = (settings or get_settings()).projects_dir
-        self.projects_dir = Path(projects_dir).expanduser()
+        # Resolved, never relative. Project paths are handed to subprocesses --
+        # COLMAP, ffmpeg, a trainer -- that run with their own working
+        # directory, so a relative path here resolves against the wrong root
+        # and the tool reports a missing file that plainly exists.
+        self.projects_dir = Path(projects_dir).expanduser().resolve()
         self.projects_dir.mkdir(parents=True, exist_ok=True)
 
     def path_for(self, project_id: str) -> Path:

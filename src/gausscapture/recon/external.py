@@ -75,6 +75,10 @@ class ExternalTrainer:
             )
 
         params = TRAINING_PRESETS.get(preset, TRAINING_PRESETS["draft"])
+        # The trainer runs from its own checkout, so relative paths would
+        # resolve against that directory rather than ours.
+        dataset_dir = Path(dataset_dir).resolve()
+        output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         cmd = [

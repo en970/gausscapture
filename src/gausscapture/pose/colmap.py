@@ -80,6 +80,9 @@ def run_colmap(
             "`colmap_path` in settings."
         )
 
+    # Absolute from here down. COLMAP runs as a subprocess with its own working
+    # directory, so every path it is given must stand on its own.
+    project_path = Path(project_path).resolve()
     images = project_path / "frames" / "images"
     if not images.exists() or not any(images.glob("*.jpg")):
         raise PipelineStateError("No extracted frames found. Run frame extraction first.")

@@ -44,6 +44,26 @@ class TestProjectStore:
         with pytest.raises(FileNotFoundError):
             store.get("nope")
 
+    def test_project_paths_are_absolute(self, tmp_path, monkeypatch):
+        """Relative project paths break every subprocess in the pipeline.
+
+        COLMAP, ffmpeg and any trainer run with their own working directory, so
+        a relative path resolves against the wrong root and the tool reports a
+        missing file that plainly exists. Regression test for a benchmark run
+        launched with a relative --out.
+        """
+        from gausscapture.project import ProjectStore
+
+        monkeypatch.chdir(tmp_path)
+        store = ProjectStore("runs/benchmark/projects")
+        project = store.create("relative")
+
+        assert store.projects_dir.is_absolute()
+        assert project.path.is_absolute()
+        assert store.get(project.id).path.is_absolute()
+        assert project.colmap_dir.is_absolute()
+        assert project.frames_dir.is_absolute()
+
 
 class TestPack:
     def test_minimal_pack_is_valid_with_warnings(self, project_with_video):
