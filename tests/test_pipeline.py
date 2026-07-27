@@ -90,6 +90,65 @@ class TestPack:
             archive.import_archive(project_with_video.path, junk)
 
 
+class TestVideoProbe:
+    """A portrait phone recording stores a landscape frame plus a rotation flag.
+
+    OpenCV applies that flag, so probe metadata must describe the decoded frame
+    rather than the coded one -- otherwise every consumer sees dimensions
+    transposed relative to what it actually reads, and camera intrinsics
+    matched against them are silently wrong.
+    """
+
+    def _rotated(self, source: Path, degrees: int, out: Path) -> Path:
+        import shutil
+        import subprocess
+
+        if not shutil.which("ffmpeg"):
+            pytest.skip("ffmpeg not installed")
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-display_rotation", str(degrees),
+             "-i", str(source), "-c", "copy", str(out)],
+            check=True,
+        )
+        return out
+
+    def test_unrotated_dimensions(self, tmp_path):
+        from gausscapture.ingest.video import probe_video
+
+        source = make_video(tmp_path / "plain.mp4", frames=10, size=(160, 120))
+        info = probe_video(source)
+        assert (info.width, info.height) == (160, 120)
+        assert info.rotation == 0
+
+    def test_quarter_turn_transposes_reported_dimensions(self, tmp_path):
+        import cv2
+
+        from gausscapture.ingest.video import probe_video
+
+        source = make_video(tmp_path / "plain.mp4", frames=10, size=(160, 120))
+        rotated = self._rotated(source, 90, tmp_path / "rot90.mp4")
+
+        info = probe_video(rotated)
+        assert info.rotation == 90
+        assert (info.width, info.height) == (120, 160)
+
+        # The contract that matters: probe agrees with what a decoder returns.
+        capture = cv2.VideoCapture(str(rotated))
+        ok, frame = capture.read()
+        capture.release()
+        assert ok
+        assert (frame.shape[1], frame.shape[0]) == (info.width, info.height)
+
+    def test_half_turn_leaves_dimensions_alone(self, tmp_path):
+        from gausscapture.ingest.video import probe_video
+
+        source = make_video(tmp_path / "plain.mp4", frames=10, size=(160, 120))
+        rotated = self._rotated(source, 180, tmp_path / "rot180.mp4")
+        info = probe_video(rotated)
+        assert info.rotation == 180
+        assert (info.width, info.height) == (160, 120)
+
+
 class TestTelemetry:
     def test_produces_a_report(self, project_with_video):
         report = analyze_capture(project_with_video.path, sample_count=20)

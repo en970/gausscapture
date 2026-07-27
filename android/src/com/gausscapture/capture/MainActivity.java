@@ -280,6 +280,26 @@ public class MainActivity extends Activity {
         super.onPause();
     }
 
+    /**
+     * The activity follows the phone rather than forcing a grip.
+     *
+     * <p>The pipeline does not care whether a capture is portrait or landscape -- what matters is
+     * that the orientation is constant within a take and recorded accurately. So rotation is free
+     * while idle and frozen during a recording, since the encoder's frame geometry is fixed when
+     * the session is configured and cannot change underneath it.
+     */
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration config) {
+        super.onConfigurationChanged(config);
+        configureTransform(previewView.getWidth(), previewView.getHeight());
+    }
+
+    private void lockOrientation(boolean locked) {
+        setRequestedOrientation(locked
+                ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
+                : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER);
+    }
+
     // ---------------------------------------------------------------- orientation
 
     private int displayRotation() {
@@ -659,6 +679,7 @@ public class MainActivity extends Activity {
         uiHandler.post(new Runnable() {
             @Override
             public void run() {
+                lockOrientation(true);
                 recordButton.setBackgroundResource(R.drawable.btn_stop);
                 timerView.setVisibility(View.VISIBLE);
                 timerView.setText("00:00");
@@ -709,6 +730,7 @@ public class MainActivity extends Activity {
         uiHandler.post(new Runnable() {
             @Override
             public void run() {
+                lockOrientation(false);
                 recordButton.setBackgroundResource(R.drawable.btn_record);
                 timerView.setVisibility(View.GONE);
                 hintView.setText(summary.split("\n")[0]);

@@ -15,7 +15,16 @@ from typing import Any
 
 @dataclass
 class VideoInfo:
-    """Container-level facts about a source video."""
+    """Container-level facts about a source video.
+
+    ``width`` and ``height`` are **display** dimensions: what a decoder actually
+    hands you, after any rotation the container asks for. A phone recording in
+    portrait stores a landscape frame plus a 90-degree rotation flag, so the
+    coded size and the decoded size differ. OpenCV applies the flag, so
+    reporting the coded size here would describe frames nobody ever sees, and
+    any camera intrinsics matched against it would be transposed.
+    ``rotation`` keeps the raw value for anyone who needs it.
+    """
 
     duration_sec: float | None = None
     width: int | None = None
@@ -24,6 +33,7 @@ class VideoInfo:
     codec: str = "unknown"
     bitrate: int | None = None
     has_audio: bool = False
+    rotation: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -31,7 +31,9 @@ def probe_video(video_path: Path, settings: Settings | None = None) -> VideoInfo
         "-v",
         "error",
         "-show_entries",
-        "format=duration,bit_rate:stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate",
+        "format=duration,bit_rate"
+        ":stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate"
+        ":stream_side_data=rotation",
         "-of",
         "json",
         str(video_path),
@@ -49,15 +51,43 @@ def probe_video(video_path: Path, settings: Settings | None = None) -> VideoInfo
     audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
     fmt = data.get("format", {})
 
+    rotation = _rotation_of(video_stream)
+    width = video_stream.get("width")
+    height = video_stream.get("height")
+    # A quarter turn means the decoder hands back transposed frames.
+    if rotation % 180 == 90 and width and height:
+        width, height = height, width
+
     return VideoInfo(
         duration_sec=_as_float(fmt.get("duration")),
-        width=video_stream.get("width"),
-        height=video_stream.get("height"),
+        width=width,
+        height=height,
         fps=_parse_rate(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate")),
         codec=video_stream.get("codec_name") or "unknown",
         bitrate=_as_int(fmt.get("bit_rate")),
         has_audio=audio_stream is not None,
+        rotation=rotation,
     )
+
+
+def _rotation_of(video_stream: dict[str, Any]) -> int:
+    """Normalised container rotation in degrees, 0/90/180/270.
+
+    Modern ffmpeg records this as display-matrix side data and reports it as a
+    negative angle; older files use a ``rotate`` tag. Both are read, and the
+    result is normalised so callers never have to think about the sign.
+    """
+    raw: Any = None
+    for side_data in video_stream.get("side_data_list") or []:
+        if "rotation" in side_data:
+            raw = side_data["rotation"]
+            break
+    if raw is None:
+        raw = (video_stream.get("tags") or {}).get("rotate")
+    try:
+        return int(round(float(raw))) % 360 if raw is not None else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def _probe_with_opencv(video_path: Path) -> VideoInfo:
