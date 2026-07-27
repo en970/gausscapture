@@ -72,3 +72,34 @@ class TestBuildReport:
         write_binary_model(sparse / "1", [IDENTITY_POSE])
         report = _build_report(sparse, images_dir, "sequential")
         assert any("disconnected" in warning for warning in report.warnings)
+
+    def test_picks_the_largest_model_not_the_first(self, tmp_path, images_dir):
+        """COLMAP numbers models by reconstruction order, not by size.
+
+        Regression test for a real capture where sparse/0 held a 3-image
+        fragment and sparse/1 held a usable 63-image reconstruction: taking
+        sparse/0 reported a 69% success as a 3% failure.
+        """
+        sparse = tmp_path / "sparse"
+        write_binary_model(sparse / "0", [IDENTITY_POSE])            # small fragment, first
+        write_binary_model(sparse / "1", [IDENTITY_POSE, SHIFTED_POSE])  # the real one
+
+        report = _build_report(sparse, images_dir, "sequential")
+        assert report.images_registered == 2
+        assert report.model_dir.endswith("1")
+        # The discarded fragment's size is reported, so a fragmented capture is
+        # visibly fragmented rather than quietly presented as whole.
+        warning = " ".join(report.warnings)
+        assert "2 disconnected models" in warning
+        assert "[1]" in warning
+
+    def test_dataset_builder_also_picks_the_largest(self, tmp_path):
+        """The same trap in the other place a model is selected."""
+        from gausscapture.recon.dataset import _find_sparse_model
+
+        project = tmp_path / "project"
+        sparse = project / "colmap" / "sparse"
+        write_binary_model(sparse / "0", [IDENTITY_POSE])
+        write_binary_model(sparse / "1", [IDENTITY_POSE, SHIFTED_POSE])
+
+        assert _find_sparse_model(project).name == "1"

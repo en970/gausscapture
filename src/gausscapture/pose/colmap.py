@@ -164,14 +164,17 @@ def _build_report(sparse_dir: Path, images: Path, matcher: str) -> PoseReport:
             ],
         )
 
-    # COLMAP can split a capture into several disconnected models; the first is
-    # the largest and the one a trainer should use. Counting must go through
-    # the shared model reader: the mapper writes *binary* models by default,
-    # and a text-only count silently reports a successful reconstruction as
-    # zero registered images -- which is exactly what happened on the first
-    # real run of the evaluation harness.
-    model_dir = model_dirs[0]
-    registered, points = _count_model(model_dir)
+    # COLMAP splits a capture it cannot connect into several models, numbered
+    # in the order they were reconstructed -- NOT by size. Taking sparse/0
+    # therefore reports whichever fragment happened to be built first, which on
+    # a real capture meant announcing a 3-image fragment as the result while a
+    # usable 63-image reconstruction sat in sparse/1. Pick the largest.
+    #
+    # Counting goes through the shared model reader because the mapper writes
+    # *binary* models by default, and a text-only count silently reports a
+    # successful reconstruction as zero registered images.
+    measured = [(*_count_model(d), d) for d in model_dirs]
+    registered, points, model_dir = max(measured, key=lambda item: item[0])
     ratio = registered / images_total if images_total else 0.0
 
     if ratio >= GOOD_REGISTRATION_RATIO:
@@ -188,9 +191,11 @@ def _build_report(sparse_dir: Path, images: Path, matcher: str) -> PoseReport:
             "training quality will suffer."
         )
     if len(model_dirs) > 1:
+        other = sorted((count for count, _, d in measured if d != model_dir), reverse=True)
         warnings.append(
-            f"COLMAP produced {len(model_dirs)} disconnected models. The capture probably "
-            "broke into segments; re-shoot with continuous motion and more overlap."
+            f"COLMAP produced {len(model_dirs)} disconnected models and the largest "
+            f"({registered} images) was kept; the rest hold {other} images. The capture broke "
+            "into segments -- re-shoot with continuous motion and more overlap."
         )
 
     report = PoseReport(

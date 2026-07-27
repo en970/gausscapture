@@ -112,14 +112,29 @@ def _find_sparse_model(project_path: Path) -> Path | None:
         return None
     if any((sparse_root / f"{s}.bin").exists() or (sparse_root / f"{s}.txt").exists() for s in SPARSE_FILES):
         return sparse_root
-    subdirs = sorted(p for p in sparse_root.iterdir() if p.is_dir())
-    for candidate in subdirs:
-        if any(
-            (candidate / f"{s}.bin").exists() or (candidate / f"{s}.txt").exists()
-            for s in SPARSE_FILES
-        ):
-            return candidate
-    return None
+    candidates = [
+        p
+        for p in sorted(sparse_root.iterdir())
+        if p.is_dir()
+        and any((p / f"{s}.bin").exists() or (p / f"{s}.txt").exists() for s in SPARSE_FILES)
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # COLMAP numbers disconnected models in reconstruction order, not by size,
+    # so sparse/0 is frequently a small fragment. Train on the largest.
+    from gausscapture.errors import CaptureFormatError
+    from gausscapture.pose.model import read_model
+
+    def registered(path: Path) -> int:
+        try:
+            return len(read_model(path).images)
+        except CaptureFormatError:
+            return 0
+
+    return max(candidates, key=registered)
 
 
 def _place(src: Path, dst: Path, link: bool) -> None:
