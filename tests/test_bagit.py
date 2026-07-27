@@ -184,6 +184,58 @@ class TestArchiveRoundTrip:
             archive.export_archive(project_with_video.path, include_dataset=True)
 
 
+class TestDirectoryImport:
+    """The native app writes a directory, so that is a transfer format too."""
+
+    @pytest.fixture()
+    def capture_dir(self, tmp_path):
+        source = tmp_path / "A_good_20260101_120000"
+        (source / "video").mkdir(parents=True)
+        (source / "manifest.json").write_text(
+            '{"capturepack_version": "0.1", "video": {"main_file": "video/main_video.mp4"}, '
+            '"metadata_files": {}, "capture_settings": {}}',
+            encoding="utf-8",
+        )
+        (source / "video" / "main_video.mp4").write_bytes(b"pretend this is 200 MB of video")
+        (source / "imu.jsonl").write_text('{"t_ns": 1}\n', encoding="utf-8")
+        return source
+
+    def test_imports_and_validates(self, capture_dir, store):
+        project = store.create("imported")
+        result = archive.import_directory(project.path, capture_dir)
+        assert result["valid"], result["errors"]
+        assert manifest.find_main_video(project.capturepack_dir).exists()
+
+    def test_video_is_hardlinked_not_copied(self, capture_dir, store):
+        """A benchmark sweep imports the same capture once per preset.
+
+        At a few hundred megabytes per take, copying would turn a 40-scene
+        dataset into tens of gigabytes of identical bytes.
+        """
+        project = store.create("linked")
+        archive.import_directory(project.path, capture_dir)
+
+        source = capture_dir / "video" / "main_video.mp4"
+        imported = project.capturepack_dir / "video" / "main_video.mp4"
+        assert imported.stat().st_ino == source.stat().st_ino
+
+    def test_metadata_is_copied_so_the_original_is_safe(self, capture_dir, store):
+        """A later stage rewriting a manifest must not alter the source capture."""
+        project = store.create("safe")
+        archive.import_directory(project.path, capture_dir)
+
+        imported = project.capturepack_dir / "manifest.json"
+        assert imported.stat().st_ino != (capture_dir / "manifest.json").stat().st_ino
+
+        imported.write_text("{}", encoding="utf-8")
+        assert "capturepack_version" in (capture_dir / "manifest.json").read_text(encoding="utf-8")
+
+    def test_rejects_a_directory_without_a_manifest(self, tmp_path, store):
+        project = store.create("nope")
+        with pytest.raises(CaptureFormatError, match="manifest.json"):
+            archive.import_directory(project.path, tmp_path)
+
+
 class TestThirdPartyInterop:
     """The point of adopting BagIt is that other people's tools can read it.
 

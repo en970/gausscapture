@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import zipfile
@@ -12,6 +13,9 @@ from gausscapture.pack import bagit
 from gausscapture.pack.manifest import read_manifest, validate
 from gausscapture.progress import NullProgress, Progress
 from gausscapture.util.hash import sha256_file
+
+#: Large, immutable payload worth hardlinking rather than copying on import.
+_LINKABLE_MEDIA = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 
 
 def write_checksums(pack_dir: Path, progress: Progress | None = None) -> Path:
@@ -179,7 +183,26 @@ def import_directory(project_path: Path, source_dir: Path) -> dict[str, Any]:
     target = project_path / "capturepack"
     if target.exists():
         shutil.rmtree(target)
-    shutil.copytree(source_dir, target)
+    target.mkdir(parents=True)
+
+    for source in sorted(source_dir.rglob("*")):
+        if not source.is_file():
+            continue
+        destination = target / source.relative_to(source_dir)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        # Media is hardlinked, metadata is copied. A benchmark sweep imports the
+        # same capture once per preset, and a phone take is hundreds of
+        # megabytes -- copying the video each time turns a 40-scene dataset into
+        # tens of gigabytes of identical bytes. Metadata is copied rather than
+        # linked because a later stage rewriting a manifest in a project must
+        # never reach back and alter the original capture.
+        if source.suffix.lower() in _LINKABLE_MEDIA:
+            try:
+                os.link(source, destination)
+                continue
+            except OSError:
+                pass  # Cross-device or unsupported; fall through to a copy.
+        shutil.copy2(source, destination)
 
     result = validate(target)
     if result["valid"]:
