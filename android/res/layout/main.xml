@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <TextureView
+        android:id="@+id/preview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Status, kept small and out of the way: it is reference information,
+         not something to read while filming. -->
+    <TextView
+        android:id="@+id/status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentTop="true"
+        android:layout_alignParentStart="true"
+        android:layout_margin="14dp"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:background="@drawable/panel"
+        android:textColor="#a5a2b0"
+        android:textSize="11sp"
+        android:fontFamily="monospace"
+        android:lineSpacingExtra="2dp"
+        android:text="starting" />
+
+    <!-- Timer is what you actually glance at mid-take, so it is large and
+         centred where the eye already is. -->
+    <TextView
+        android:id="@+id/timer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentTop="true"
+        android:layout_centerHorizontal="true"
+        android:layout_margin="14dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:background="@drawable/panel"
+        android:textColor="#ffffff"
+        android:textSize="26sp"
+        android:fontFamily="monospace"
+        android:text="00:00" />
+
+    <!-- The record control sits under the right thumb when the phone is held
+         in landscape, which is how it is held while walking an orbit. -->
+    <Button
+        android:id="@+id/record"
+        android:layout_width="86dp"
+        android:layout_height="86dp"
+        android:layout_alignParentEnd="true"
+        android:layout_centerVertical="true"
+        android:layout_marginEnd="22dp"
+        android:background="@drawable/btn_record"
+        android:text=""
+        android:contentDescription="Record" />
+
+    <!-- Capture-protocol presets. Typing a filename one-handed while holding a
+         phone at arm's length is the kind of friction that produces
+         mislabelled data, so the takes we actually want are one tap each. -->
+    <HorizontalScrollView
+        android:id="@+id/presetScroll"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentBottom="true"
+        android:layout_alignParentStart="true"
+        android:layout_toStartOf="@id/record"
+        android:layout_margin="14dp"
+        android:scrollbars="none"
+        android:fillViewport="false">
+
+        <LinearLayout
+            android:id="@+id/presets"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal" />
+    </HorizontalScrollView>
+
+    <TextView
+        android:id="@+id/hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_above="@id/presetScroll"
+        android:layout_alignParentStart="true"
+        android:layout_marginStart="18dp"
+        android:layout_marginBottom="4dp"
+        android:textColor="#d99a6c"
+        android:textSize="13sp"
+        android:shadowColor="#000000"
+        android:shadowRadius="6"
+        android:text="" />
+</RelativeLayout>

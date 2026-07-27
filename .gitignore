@@ -20,3 +20,9 @@ benchmarks/runs/
 
 # Self-signed development certificates for LAN HTTPS.
 .certs/
+
+# Android build artefacts
+android/build/
+android/*.apk
+
+android/debug.keystore
