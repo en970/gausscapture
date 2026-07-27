@@ -146,6 +146,28 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--type", default="web", choices=["raw", "web", "blender", "unity", "proxy_mesh"])
     p.add_argument("--json", action="store_true")
 
+    # bench ------------------------------------------------------------------
+    p = add("bench", "Batch-evaluate captures and analyse the results.", _cmd_bench)
+    p.add_argument("action", choices=["run", "analyze", "analyse"])
+    p.add_argument(
+        "target",
+        type=Path,
+        help="Directory of videos/packs (run), or a results.jsonl (analyze)",
+    )
+    p.add_argument("--out", type=Path, help="Output directory for a run")
+    p.add_argument("--preset", default="balanced", choices=["fast", "balanced", "dense"])
+    p.add_argument("--matcher", default="sequential", choices=["sequential", "exhaustive"])
+    p.add_argument("--skip-pose", action="store_true", help="Telemetry and frames only")
+    p.add_argument(
+        "--outcome",
+        default="registered_ratio",
+        help="Column to correlate signals against (analyze)",
+    )
+    p.add_argument(
+        "--permutations", type=int, default=10_000, help="Permutation count for p-values"
+    )
+    p.add_argument("--json", action="store_true")
+
     # run --------------------------------------------------------------------
     p = add("run", "Run telemetry, frames, pose, and dataset in one pass.", _cmd_run)
     p.add_argument("project")
@@ -456,6 +478,69 @@ def _cmd_export(args, progress) -> int:
     result = create_export(project_path, args.type)
     human = f"{result['path']}  ({result['size_bytes'] / 1e6:.1f} MB)"
     return _emit(result, args.json, human)
+
+
+def _cmd_bench(args, progress) -> int:
+    from gausscapture.eval.analysis import analyse
+    from gausscapture.eval.harness import load_results, run_batch, write_csv
+    from gausscapture.ingest.video import VIDEO_EXTENSIONS
+
+    if args.action == "run":
+        target = args.target.expanduser()
+        if target.is_dir():
+            sources = sorted(
+                p
+                for p in target.iterdir()
+                if p.suffix.lower() in VIDEO_EXTENSIONS or p.suffix.lower() == ".capturepack"
+            )
+        else:
+            sources = [target]
+        if not sources:
+            raise GaussCaptureError(f"No videos or capture packs found in {target}")
+
+        out_dir = args.out or (Path("benchmarks") / "runs" / target.name)
+        records = run_batch(
+            sources,
+            out_dir,
+            frame_preset=args.preset,
+            matcher=args.matcher,
+            skip_pose=args.skip_pose,
+            progress=progress,
+        )
+        write_csv(records, out_dir / "results.csv")
+
+        summary = {
+            "out_dir": str(out_dir),
+            "captures": len(records),
+            "registered": sum(1 for r in records if r.registered),
+            "errors": sum(1 for r in records if r.error),
+            "results": str(out_dir / "results.jsonl"),
+        }
+        if args.json:
+            return _emit(summary, True)
+
+        print(f"\n{'capture':<22} {'frames':>7} {'reg':>6} {'ratio':>7} {'points':>8}  status")
+        for record in records:
+            print(
+                f"{record.name[:22]:<22} {record.frames_used:>7} "
+                f"{'yes' if record.registered else 'no':>6} "
+                f"{record.registered_ratio:>6.0%} {record.sparse_points:>8}  "
+                f"{record.error or record.pose_status}"
+            )
+        print(f"\nresults: {out_dir}/results.jsonl  (+ .csv)")
+        return 0
+
+    # analyze ---------------------------------------------------------------
+    path = args.target.expanduser()
+    if path.is_dir():
+        path = path / "results.jsonl"
+    report = analyse(
+        load_results(path), outcome=args.outcome, permutations=args.permutations
+    )
+    if args.json:
+        return _emit(report.to_dict(), True)
+    print(report.render())
+    return 0
 
 
 def _cmd_run(args, progress) -> int:

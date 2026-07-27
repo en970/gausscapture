@@ -13,3 +13,7 @@ frontend/node_modules/
 frontend/dist/
 .DS_Store
 *.log
+
+# Real capture footage: large, personal, and not ours to redistribute.
+captures/
+benchmarks/runs/
