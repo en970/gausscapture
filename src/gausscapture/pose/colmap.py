@@ -162,10 +162,13 @@ def _build_report(sparse_dir: Path, images: Path, matcher: str) -> PoseReport:
         )
 
     # COLMAP can split a capture into several disconnected models; the first is
-    # the largest and the one a trainer should use.
+    # the largest and the one a trainer should use. Counting must go through
+    # the shared model reader: the mapper writes *binary* models by default,
+    # and a text-only count silently reports a successful reconstruction as
+    # zero registered images -- which is exactly what happened on the first
+    # real run of the evaluation harness.
     model_dir = model_dirs[0]
-    registered = _count_registered(model_dir)
-    points = _count_points(model_dir)
+    registered, points = _count_model(model_dir)
     ratio = registered / images_total if images_total else 0.0
 
     if ratio >= GOOD_REGISTRATION_RATIO:
@@ -216,29 +219,13 @@ def _run(cmd: list[str], cwd: Path, progress: Progress) -> None:
         raise RuntimeError(f"COLMAP step failed with exit code {code}: {' '.join(cmd[:2])}")
 
 
-def _count_registered(model_dir: Path) -> int:
-    """Count registered images from a text model.
+def _count_model(model_dir: Path) -> tuple[int, int]:
+    """Registered-image and sparse-point counts, whichever dialect is on disk."""
+    from gausscapture.errors import CaptureFormatError
+    from gausscapture.pose.model import read_model
 
-    ``images.txt`` uses two lines per image; only the first carries the name.
-    Binary models are not parsed here -- COLMAP writes text when asked, and the
-    count is only used for a quality verdict.
-    """
-    text = model_dir / "images.txt"
-    if not text.exists():
-        return 0
-    count = 0
-    for line in text.read_text(encoding="utf-8", errors="ignore").splitlines():
-        if line and not line.startswith("#") and ".jpg" in line.lower():
-            count += 1
-    return count
-
-
-def _count_points(model_dir: Path) -> int:
-    text = model_dir / "points3D.txt"
-    if not text.exists():
-        return 0
-    return sum(
-        1
-        for line in text.read_text(encoding="utf-8", errors="ignore").splitlines()
-        if line and not line.startswith("#")
-    )
+    try:
+        model = read_model(model_dir)
+    except CaptureFormatError:
+        return 0, 0
+    return len(model.images), model.points
