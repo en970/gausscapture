@@ -17,3 +17,6 @@ frontend/dist/
 # Real capture footage: large, personal, and not ours to redistribute.
 captures/
 benchmarks/runs/
+
+# Self-signed development certificates for LAN HTTPS.
+.certs/

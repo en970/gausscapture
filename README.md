@@ -102,7 +102,11 @@ The backend serves a dependency-free PWA at `http://localhost:7860/mobile/`. To 
 GAUSSCAPTURE_HOST=0.0.0.0 ./start_macos.sh
 ```
 
+This serves **HTTPS with a self-signed certificate**, generated on first run. That is not optional: browsers grant camera access only in a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts) — HTTPS or `localhost` — so a plain-HTTP LAN address cannot open the camera at all, no matter what the page does. The phone will warn once about the certificate; accept it (iOS Safari: *Show Details → visit this website*; Android Chrome: *Advanced → Proceed*).
+
 Browsers cannot expose calibrated intrinsics or ARKit poses, so COLMAP is still required. A native capture app is on the roadmap and is a prerequisite for the research programme.
+
+If you only need footage, the phone's own camera app plus AirDrop is simpler and gives better video — the PWA exists to capture *sensor data alongside* the video, not to replace the camera app.
 
 ### Training
 
