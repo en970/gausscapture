@@ -2,21 +2,25 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
 
 from gausscapture.errors import CaptureFormatError
+from gausscapture.pack import bagit
 from gausscapture.pack.manifest import read_manifest, validate
 from gausscapture.progress import NullProgress, Progress
 from gausscapture.util.hash import sha256_file
 
 
 def write_checksums(pack_dir: Path, progress: Progress | None = None) -> Path:
-    """Hash every file in the pack except the checksum file itself.
+    """Hash every file in a working pack directory.
 
-    On a multi-gigabyte video this is I/O bound and can take a while, hence the
-    progress reporting.
+    This is the in-place, working-directory manifest. The stronger guarantee --
+    a BagIt manifest covering a frozen payload -- is applied at export, because
+    a checksum file inside a directory that pipeline stages keep rewriting goes
+    stale immediately.
     """
     progress = progress or NullProgress()
     files = [
@@ -37,7 +41,7 @@ def write_checksums(pack_dir: Path, progress: Progress | None = None) -> Path:
 
 
 def verify_checksums(pack_dir: Path) -> dict[str, Any]:
-    """Re-hash and compare. Used by the CLI's ``pack validate --verify``."""
+    """Re-hash a working pack and compare against ``checksums/sha256.json``."""
     path = pack_dir / "checksums" / "sha256.json"
     if not path.exists():
         return {"verified": False, "reason": "No checksums/sha256.json in pack", "mismatches": []}
@@ -58,56 +62,165 @@ def verify_checksums(pack_dir: Path) -> dict[str, Any]:
     }
 
 
-def import_archive(project_path: Path, archive_path: Path) -> dict[str, Any]:
-    """Extract a ``.capturepack`` into a project, flattening a single wrapper dir.
+def export_archive(
+    project_path: Path,
+    out_path: Path | None = None,
+    include_dataset: bool = False,
+    progress: Progress | None = None,
+) -> Path:
+    """Write a distributable ``.capturepack`` as a BagIt bag.
 
-    Archives produced by zipping a folder (rather than its contents) nest
-    everything one level down; users hit this constantly, so we correct it
-    rather than rejecting the file.
+    With ``include_dataset``, the extracted frames, the COLMAP model and a
+    ``transforms.json`` are added alongside the capture, which makes the
+    archive directly trainable: unzip it, point a trainer at ``data/``, and no
+    conversion step is involved. Without it the archive carries only the
+    capture itself, which is what you want for sharing raw footage.
+    """
+    progress = progress or NullProgress()
+    pack_dir = project_path / "capturepack"
+    manifest = read_manifest(pack_dir)
+
+    if out_path is None:
+        out_path = project_path / f"{manifest.get('session_id', 'session')}.capturepack"
+    out_path = Path(out_path)
+
+    with tempfile.TemporaryDirectory(prefix="gausscapture-bag-") as tmp:
+        staging = Path(tmp) / "payload"
+        shutil.copytree(pack_dir, staging)
+        if include_dataset:
+            _stage_dataset(project_path, staging, progress)
+
+        bag_dir = Path(tmp) / "bag"
+        bagit.write_bag(
+            staging,
+            bag_dir,
+            info={
+                "External-Identifier": str(manifest.get("session_id", "")),
+                "Internal-Sender-Identifier": str(manifest.get("session_name", "")),
+                "Internal-Sender-Description": (
+                    f"GaussCapture CapturePack {manifest.get('capturepack_version', '?')}, "
+                    f"capture type {manifest.get('capture_type', 'unknown')}"
+                ),
+            },
+            progress=progress,
+        )
+
+        if out_path.exists():
+            out_path.unlink()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file in sorted(bag_dir.rglob("*")):
+                if file.is_file():
+                    archive.write(file, file.relative_to(bag_dir))
+
+    progress.update(100, f"Archive written to {out_path.name}")
+    return out_path
+
+
+def import_archive(project_path: Path, archive_path: Path) -> dict[str, Any]:
+    """Extract a ``.capturepack`` into a project.
+
+    Handles three shapes, because archives arrive from three eras and three
+    tools: a BagIt bag, a flat pack, and a pack accidentally zipped with its
+    parent folder (which is what happens when you right-click a directory and
+    choose Compress).
     """
     if not zipfile.is_zipfile(archive_path):
         raise CaptureFormatError(f"Not a zip archive: {archive_path.name}")
 
     target = project_path / "capturepack"
-    if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True, exist_ok=True)
 
-    with zipfile.ZipFile(archive_path, "r") as archive:
-        _safe_extract(archive, target)
+    with tempfile.TemporaryDirectory(prefix="gausscapture-import-") as tmp:
+        extracted = Path(tmp) / "extracted"
+        extracted.mkdir(parents=True)
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            _safe_extract(archive, extracted)
 
-    if not (target / "manifest.json").exists():
-        nested = next(target.glob("*/manifest.json"), None)
-        if nested:
-            _flatten(nested.parent, target, project_path)
+        source = _locate_pack_root(extracted)
+        if source is None:
+            raise CaptureFormatError(
+                "No manifest.json found in the archive; this does not look like a CapturePack"
+            )
+
+        bag_report = None
+        if bagit.is_bag(extracted):
+            bag_report = bagit.validate_bag(extracted)
+
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
 
     result = validate(target)
+    if bag_report is not None:
+        result["bag"] = bag_report
+        # A bag whose checksums do not match is a corrupt transfer, not a
+        # merely incomplete capture, so it must not pass validation.
+        if not bag_report["valid"]:
+            result["valid"] = False
+            result["errors"] = [*result["errors"], *bag_report["errors"][:5]]
     if result["valid"]:
         write_checksums(target)
     return result
 
 
-def export_archive(project_path: Path, out_path: Path | None = None) -> Path:
-    """Zip a project's pack back into a distributable ``.capturepack``."""
-    pack_dir = project_path / "capturepack"
-    manifest = read_manifest(pack_dir)
-    if out_path is None:
-        out_path = project_path / f"{manifest.get('session_id', 'session')}.capturepack"
-    if out_path.exists():
-        out_path.unlink()
-    with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for file in sorted(pack_dir.rglob("*")):
-            if file.is_file():
-                archive.write(file, file.relative_to(pack_dir))
-    return out_path
+def _stage_dataset(project_path: Path, staging: Path, progress: Progress) -> None:
+    """Add images, the COLMAP model, and transforms.json to a bag payload."""
+    from gausscapture.pack.transforms import build_transforms
+    from gausscapture.pose.model import read_model
+    from gausscapture.recon.dataset import _find_sparse_model
+
+    images_src = project_path / "frames" / "images"
+    if not images_src.exists() or not any(images_src.glob("*.jpg")):
+        raise CaptureFormatError(
+            "Cannot include a dataset: no extracted frames. Run frame extraction first."
+        )
+    model_dir = _find_sparse_model(project_path)
+    if model_dir is None:
+        raise CaptureFormatError(
+            "Cannot include a dataset: no COLMAP model. Run pose estimation first."
+        )
+
+    images_dst = staging / "images"
+    images_dst.mkdir(parents=True, exist_ok=True)
+    names = set()
+    for frame in sorted(images_src.glob("*.jpg")):
+        shutil.copy2(frame, images_dst / frame.name)
+        names.add(frame.name)
+
+    sparse_dst = staging / "sparse" / "0"
+    sparse_dst.mkdir(parents=True, exist_ok=True)
+    for file in sorted(model_dir.iterdir()):
+        if file.is_file():
+            shutil.copy2(file, sparse_dst / file.name)
+
+    document = build_transforms(read_model(model_dir), applies_to=names)
+    (staging / "transforms.json").write_text(json.dumps(document, indent=2), encoding="utf-8")
+    progress.log(f"Staged {len(names)} images and transforms.json with {len(document['frames'])} poses")
+
+
+def _locate_pack_root(extracted: Path) -> Path | None:
+    """Find the directory containing ``manifest.json``.
+
+    Searched in order of likelihood: a bag's payload, the root itself, then a
+    single wrapper directory.
+    """
+    if bagit.is_bag(extracted) and (bagit.payload_dir(extracted) / "manifest.json").exists():
+        return bagit.payload_dir(extracted)
+    if (extracted / "manifest.json").exists():
+        return extracted
+    nested = sorted(extracted.glob("*/manifest.json"))
+    if nested:
+        return nested[0].parent
+    deeper = sorted(extracted.glob("*/*/manifest.json"))
+    return deeper[0].parent if deeper else None
 
 
 def _safe_extract(archive: zipfile.ZipFile, target: Path) -> None:
     """Extract, refusing entries that would escape the target directory.
 
-    ``ZipFile.extractall`` does sanitise absolute paths and ``..`` on modern
-    Python, but a pack is untrusted input that users download from each other,
-    so the check is made explicit rather than assumed.
+    ``extractall`` does sanitise absolute paths and ``..`` on modern Python,
+    but a pack is untrusted input that users hand each other, so the check is
+    explicit rather than assumed.
     """
     target = target.resolve()
     for member in archive.infolist():
@@ -115,12 +228,3 @@ def _safe_extract(archive: zipfile.ZipFile, target: Path) -> None:
         if not destination.is_relative_to(target):
             raise CaptureFormatError(f"Archive entry escapes the pack directory: {member.filename}")
     archive.extractall(target)
-
-
-def _flatten(nested_root: Path, target: Path, project_path: Path) -> None:
-    temp = project_path / "_capturepack_nested"
-    if temp.exists():
-        shutil.rmtree(temp)
-    nested_root.rename(temp)
-    shutil.rmtree(target)
-    temp.rename(target)

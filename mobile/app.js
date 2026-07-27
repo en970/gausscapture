@@ -282,19 +282,69 @@ async function buildCapturePack() {
       "COLMAP will be required for reconstruction unless pose metadata is added later."
     ]
   };
-  const files = [
+  const payload = [
     ["manifest.json", jsonBlob(manifest)],
     [videoName, recordedBlob],
     ["camera/intrinsics.json", jsonBlob(intrinsics)],
     ["motion/imu_gyro.json", jsonBlob(imu)],
     ["quality/capture_warnings.json", jsonBlob(warnings)]
   ];
+
   const checksumEntries = {};
-  for (const [name, blob] of files) {
+  for (const [name, blob] of payload) {
     checksumEntries[name] = await sha256(blob);
   }
-  files.push(["checksums/sha256.json", jsonBlob(checksumEntries)]);
-  return new Blob([await zipStore(files)], { type: "application/zip" });
+  payload.push(["checksums/sha256.json", jsonBlob(checksumEntries)]);
+
+  return new Blob([await zipStore(await buildBag(payload))], { type: "application/zip" });
+}
+
+// Wraps the payload as a BagIt bag (RFC 8493) so a pack written on a phone is
+// verifiable by bagit-python, an institutional repository, or Zenodo -- none
+// of which will ever learn a bespoke zip dialect. See docs/CAPTUREPACK_SPEC.md.
+async function buildBag(payload) {
+  const entries = [];
+  const manifestLines = [];
+  let octets = 0;
+
+  for (const [name, blob] of payload) {
+    const path = `data/${name}`;
+    entries.push([path, blob]);
+    manifestLines.push(`${await sha256(blob)}  ${path}`);
+    octets += blob.size;
+  }
+
+  const bagit = new Blob(["BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n"], {
+    type: "text/plain"
+  });
+  const bagInfo = new Blob(
+    [
+      [
+        "Bag-Software-Agent: GaussCapture mobile PWA (https://github.com/en970/gausscapture)",
+        `Bagging-Date: ${new Date().toISOString().slice(0, 10)}`,
+        // Payload-Oxum is BagIt's cheap integrity check: total octets and file
+        // count, verifiable without hashing anything.
+        `Payload-Oxum: ${octets}.${payload.length}`,
+        `Internal-Sender-Identifier: ${els.sessionName.value || "Phone Capture"}`,
+        "Internal-Sender-Description: GaussCapture CapturePack captured in a browser"
+      ].join("\n") + "\n"
+    ],
+    { type: "text/plain" }
+  );
+  const payloadManifest = new Blob([manifestLines.join("\n") + "\n"], { type: "text/plain" });
+
+  const tagFiles = [
+    ["bagit.txt", bagit],
+    ["bag-info.txt", bagInfo],
+    ["manifest-sha256.txt", payloadManifest]
+  ];
+  const tagLines = [];
+  for (const [name, blob] of tagFiles) {
+    tagLines.push(`${await sha256(blob)}  ${name}`);
+  }
+  tagFiles.push(["tagmanifest-sha256.txt", new Blob([tagLines.join("\n") + "\n"])]);
+
+  return [...tagFiles, ...entries];
 }
 
 function jsonBlob(value) {

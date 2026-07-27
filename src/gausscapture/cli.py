@@ -91,6 +91,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=["validate", "export"])
     p.add_argument("target", help="Project id, project path, or a pack directory")
     p.add_argument("--verify", action="store_true", help="Re-hash files against the checksums")
+    p.add_argument("--out", type=Path, help="Destination archive path (export)")
+    p.add_argument(
+        "--with-dataset",
+        action="store_true",
+        help="Include images, the COLMAP model and transforms.json, making the archive trainable",
+    )
     p.add_argument("--json", action="store_true")
 
     # telemetry --------------------------------------------------------------
@@ -301,7 +307,7 @@ def _cmd_import(args, progress) -> int:
 
 
 def _cmd_pack(args, progress) -> int:
-    from gausscapture.pack import archive, manifest
+    from gausscapture.pack import archive, manifest, transforms
 
     candidate = Path(args.target).expanduser()
     if (candidate / "manifest.json").exists():
@@ -312,12 +318,27 @@ def _cmd_pack(args, progress) -> int:
         pack_dir = project_path / "capturepack"
 
     if args.action == "export":
-        out = archive.export_archive(project_path)
-        return _emit({"archive": str(out)}, args.json, str(out))
+        out = archive.export_archive(
+            project_path,
+            out_path=args.out,
+            include_dataset=args.with_dataset,
+            progress=progress,
+        )
+        size_mb = out.stat().st_size / 1e6
+        return _emit(
+            {"archive": str(out), "size_bytes": out.stat().st_size, "bagit": True},
+            args.json,
+            f"{out}  ({size_mb:.1f} MB, BagIt)",
+        )
 
     result = manifest.validate(pack_dir)
     if args.verify:
         result["checksums"] = archive.verify_checksums(pack_dir)
+
+    transforms_path = pack_dir / "transforms.json"
+    if transforms_path.exists():
+        result["transforms"] = transforms.validate_transforms(transforms_path, pack_dir)
+
     if args.json:
         result.pop("manifest", None)
         return _emit(result, True)
@@ -329,7 +350,12 @@ def _cmd_pack(args, progress) -> int:
         print(f"  warning: {warning}")
     if args.verify:
         checks = result["checksums"]
-        print(f"  checksums: {'ok' if checks['verified'] else 'MISMATCH'} ({checks.get('checked', 0)} files)")
+        state = "ok" if checks["verified"] else "MISMATCH"
+        print(f"  checksums: {state} ({checks.get('checked', 0)} files)")
+    if "transforms" in result:
+        t = result["transforms"]
+        state = "ok" if t["valid"] else "INVALID"
+        print(f"  transforms.json: {state} ({t['frames']} poses, {t.get('camera_model')})")
     return 0 if result["valid"] else 1
 
 

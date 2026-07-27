@@ -75,8 +75,34 @@ def build_dataset(
     if copied == 0:
         raise PipelineStateError(f"COLMAP model at {sparse_src} contains no cameras/images/points3D")
 
+    # A transforms.json alongside the COLMAP model widens what can read this
+    # directory: gsplat's examples take the COLMAP layout, while nerfstudio,
+    # Brush and most research code take transforms.json. Writing both costs a
+    # few kilobytes and removes a conversion step either way.
+    _write_transforms(sparse_dst, dataset_dir, {frame.name for frame in frames}, progress)
+
     progress.update(100, f"Dataset ready at {dataset_dir}")
     return dataset_dir
+
+
+def _write_transforms(
+    model_dir: Path, dataset_dir: Path, image_names: set[str], progress: Progress
+) -> None:
+    """Emit transforms.json, treating failure as non-fatal.
+
+    The COLMAP layout is the primary contract; transforms.json is a
+    convenience. An unreadable model should surface when a trainer reads it,
+    not by aborting dataset assembly.
+    """
+    from gausscapture.errors import GaussCaptureError
+    from gausscapture.pack.transforms import write_transforms
+
+    try:
+        write_transforms(
+            model_dir, dataset_dir / "transforms.json", applies_to=image_names
+        )
+    except (GaussCaptureError, OSError, ValueError) as exc:
+        progress.log(f"Could not write transforms.json: {exc}")
 
 
 def _find_sparse_model(project_path: Path) -> Path | None:
