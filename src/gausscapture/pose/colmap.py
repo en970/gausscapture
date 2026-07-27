@@ -128,7 +128,20 @@ def run_colmap(
 
     for i, (label, cmd) in enumerate(steps):
         progress.update(5 + i * 30, label)
-        _run(cmd, cwd=project_path, progress=progress)
+        try:
+            _run(cmd, cwd=project_path, progress=progress)
+        except RuntimeError:
+            # The mapper exits non-zero when it cannot initialise a
+            # reconstruction -- one image, no parallax, no matches. For this
+            # project that is a *measured outcome*, not an environment error:
+            # "SfM could not produce a model from this capture" is precisely
+            # the endpoint the study predicts. Feature extraction or matching
+            # failing, by contrast, means something is wrong with the install
+            # or the images, so those still raise.
+            if cmd[1] == "mapper":
+                progress.log("COLMAP mapper could not initialise a reconstruction")
+                return _build_report(sparse_dir, images, matcher)
+            raise
 
     return _build_report(sparse_dir, images, matcher)
 

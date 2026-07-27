@@ -18,8 +18,16 @@ from gausscapture.telemetry.signals import (
 )
 from gausscapture.types import FrameIndex, FrameSignals
 
-#: Histogram correlation above which a frame is discarded as a near-duplicate.
+#: Histogram correlation above which a frame is a duplicate *candidate*.
 DUPLICATE_CORRELATION = 0.996
+#: ...but only if it also barely differs pixel-wise from the last kept frame.
+#: Histograms are invariant to spatial rearrangement: a camera translating
+#: through a static scene produces near-identical histograms frame after frame
+#: while every pixel moves. Judged on correlation alone, the filter discards
+#: exactly the frames that carry parallax -- measured on a synthetic scene, it
+#: kept 3 of 12 well-spaced views. The pixel-difference gate is what actually
+#: distinguishes "camera did not move" from "scene has stable lighting".
+DUPLICATE_MAX_PIXEL_DIFF = 2.0
 
 FRAME_PRESETS: dict[str, dict[str, Any]] = {
     "fast": {"target_fps": 1, "max_frames": 200, "resize_max_side": 1280},
@@ -86,6 +94,7 @@ def extract_frames(
         records: list[FrameSignals] = []
         normaliser = RollingBlurNormaliser()
         prev_hist = None
+        prev_kept_gray = None
         written = 0
         skipped_blur = 0
         skipped_duplicate = 0
@@ -99,8 +108,11 @@ def extract_frames(
             if frame_no % take_every != 0:
                 continue
 
-            raw = frame_signals(frame, None, prev_hist)
-            raw.pop("_gray")
+            # Motion is measured against the last *kept* frame, not the last
+            # sampled one: after a rejected duplicate, the next frame must be
+            # compared with what is actually in the output set.
+            raw = frame_signals(frame, prev_kept_gray, prev_hist)
+            gray = raw.pop("_gray")
             hist = raw.pop("_hist")
             relative = normaliser.push(raw["blur_vol"])
 
@@ -110,7 +122,13 @@ def extract_frames(
                 skipped_blur += 1
             if keep and duplicate_filter and prev_hist is not None:
                 correlation = raw.get("hist_correlation")
-                if correlation is not None and correlation > DUPLICATE_CORRELATION:
+                motion = raw.get("motion_diff")
+                if (
+                    correlation is not None
+                    and correlation > DUPLICATE_CORRELATION
+                    and motion is not None
+                    and motion < DUPLICATE_MAX_PIXEL_DIFF
+                ):
                     keep = False
                     skipped_duplicate += 1
 
@@ -121,6 +139,7 @@ def extract_frames(
                 relpath = str(Path("frames") / "images" / f"frame_{written:06d}.jpg")
                 cv2.imwrite(str(project_path / relpath), image, [int(cv2.IMWRITE_JPEG_QUALITY), 94])
                 prev_hist = hist
+                prev_kept_gray = gray
 
             records.append(
                 FrameSignals(
@@ -131,6 +150,7 @@ def extract_frames(
                     brightness=raw["brightness"],
                     overexposed_ratio=raw["overexposed_ratio"],
                     underexposed_ratio=raw["underexposed_ratio"],
+                    motion_diff=raw.get("motion_diff"),
                     hist_correlation=raw.get("hist_correlation"),
                     used=keep,
                     file=relpath,

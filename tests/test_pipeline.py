@@ -166,6 +166,54 @@ class TestFrameExtraction:
         )
         assert index.frames_used <= 3
 
+    def test_moving_camera_is_not_mistaken_for_duplicates(self, project_with_video):
+        """Histograms are invariant to spatial rearrangement.
+
+        The fixture video slides a window across a fixed texture: every frame
+        moves everywhere, yet the grayscale histogram barely changes. Judged on
+        histogram correlation alone the filter discarded most of these frames
+        -- which is exactly the parallax a reconstruction needs. Regression
+        test for the pixel-difference gate.
+        """
+        index = extract_frames(
+            project_with_video.path,
+            {"target_fps": "all", "blur_filter": False, "max_frames": 0},
+        )
+        assert index.frames_skipped_duplicate == 0
+        assert index.frames_used == index.frames_total_sampled
+
+    def test_a_genuinely_static_video_is_deduplicated(self, store, tmp_path):
+        """The inverse case: identical frames must still be caught."""
+        import cv2
+        import numpy as np
+
+        from gausscapture.ingest.video import copy_video_into_pack, probe_video
+
+        source = tmp_path / "static.mp4"
+        writer = cv2.VideoWriter(
+            str(source), cv2.VideoWriter_fourcc(*"mp4v"), 10, (160, 120)
+        )
+        frame = np.random.default_rng(5).integers(0, 255, (120, 160, 3), dtype=np.uint8)
+        for _ in range(30):
+            writer.write(frame)
+        writer.release()
+
+        project = store.create("static")
+        for name in manifest.REQUIRED_DIRS:
+            (project.capturepack_dir / name).mkdir(parents=True, exist_ok=True)
+        video = copy_video_into_pack(source, project.path)
+        manifest.write_manifest(
+            project.capturepack_dir,
+            manifest.create_minimal_manifest(f"video/{video.name}", probe_video(video), "static"),
+        )
+        index = extract_frames(
+            project.path, {"target_fps": "all", "blur_filter": False, "max_frames": 0}
+        )
+        assert index.frames_skipped_duplicate > 0
+        # Lossy H.264-ish encoding adds noise, so a few frames may squeak past
+        # the pixel gate; what matters is that the bulk are caught.
+        assert index.frames_used < index.frames_total_sampled / 2
+
 
 class TestDataset:
     def test_requires_frames(self, project_with_video):
