@@ -330,34 +330,51 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Undoes TextureView's stretch, then rotates and centre-crops.
+     * Undoes TextureView's stretch, rotates the image upright, then fits it to the view.
      *
-     * <p>TextureView always scales the surface buffer to fill the view's bounds, ignoring aspect
-     * ratio, and applies any transform matrix on top of that. Supplying no matrix therefore
-     * guarantees a distorted image whenever the view and buffer differ in shape -- which is why
-     * the preview appeared stretched. The first step maps the view rect back onto the buffer's
-     * true proportions, cancelling that stretch; then we scale up to cover the view and rotate.
+     * <p>TextureView always scales the surface buffer to the view's bounds, ignoring aspect ratio,
+     * and applies any transform on top of that. So the transform has to be built in three distinct
+     * steps, and the order and the dimensions used at each step both matter:
+     *
+     * <ol>
+     *   <li>Map the view rect onto the buffer's <em>true</em> dimensions, which cancels the
+     *       stretch. Using the post-rotation dimensions here is wrong -- it squeezes a 16:9 image
+     *       into a 9:16 box before rotating, which is distortion no later step can undo.
+     *   <li>Rotate by (sensor orientation - display rotation).
+     *   <li><em>Now</em> the on-screen extent has swapped for a quarter turn, so the fit scale is
+     *       computed against the swapped dimensions.
+     * </ol>
+     *
+     * <p>The last step fits rather than fills. Filling would centre-crop, hiding part of what is
+     * actually being recorded -- unacceptable in a capture app, where the whole job of the preview
+     * is to show the operator the framing they are committing to. Letterboxing is the honest
+     * choice.
      */
     private void configureTransform(int viewWidth, int viewHeight) {
         if (viewWidth == 0 || viewHeight == 0) {
             return;
         }
         int rotate = previewRotation();
-        // A quarter turn swaps which buffer dimension maps to which screen axis.
-        float bufferWidth = (rotate % 180 == 0) ? previewSize.getWidth() : previewSize.getHeight();
-        float bufferHeight = (rotate % 180 == 0) ? previewSize.getHeight() : previewSize.getWidth();
-
         RectF viewRect = new RectF(0, 0, viewWidth, viewHeight);
-        RectF bufferRect = new RectF(0, 0, bufferWidth, bufferHeight);
         float centerX = viewRect.centerX();
         float centerY = viewRect.centerY();
+
+        // Step 1: cancel the stretch, using the buffer as it actually is.
+        RectF bufferRect = new RectF(0, 0, previewSize.getWidth(), previewSize.getHeight());
         bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY());
 
         Matrix matrix = new Matrix();
         matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL);
-        float scale = Math.max(viewHeight / bufferHeight, viewWidth / bufferWidth);
-        matrix.postScale(scale, scale, centerX, centerY);
+
+        // Step 2: put the scene upright.
         matrix.postRotate(rotate, centerX, centerY);
+
+        // Step 3: fit the rotated extent inside the view.
+        float shownWidth = (rotate % 180 == 0) ? previewSize.getWidth() : previewSize.getHeight();
+        float shownHeight = (rotate % 180 == 0) ? previewSize.getHeight() : previewSize.getWidth();
+        float scale = Math.min(viewWidth / shownWidth, viewHeight / shownHeight);
+        matrix.postScale(scale, scale, centerX, centerY);
+
         previewView.setTransform(matrix);
     }
 
