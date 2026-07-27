@@ -163,6 +163,30 @@ def import_archive(project_path: Path, archive_path: Path) -> dict[str, Any]:
     return result
 
 
+def import_directory(project_path: Path, source_dir: Path) -> dict[str, Any]:
+    """Import an unpacked capture directory, as the native capture app writes one.
+
+    The Android app records straight to a directory rather than zipping on the
+    phone: a session is hundreds of megabytes, and compressing already-compressed
+    H.264 on a battery to produce a file that is immediately unzipped again is
+    pure waste. So the directory is the transfer format, and this is how it
+    enters a project.
+    """
+    source_dir = Path(source_dir)
+    if not (source_dir / "manifest.json").exists():
+        raise CaptureFormatError(f"No manifest.json in {source_dir}; not a capture directory")
+
+    target = project_path / "capturepack"
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source_dir, target)
+
+    result = validate(target)
+    if result["valid"]:
+        write_checksums(target)
+    return result
+
+
 def _stage_dataset(project_path: Path, staging: Path, progress: Progress) -> None:
     """Add images, the COLMAP model, and transforms.json to a bag payload."""
     from gausscapture.pack.transforms import build_transforms

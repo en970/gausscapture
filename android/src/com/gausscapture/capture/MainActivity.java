@@ -2,166 +2,114 @@ package com.gausscapture.capture;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
-import android.graphics.Matrix;
-import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
-import android.hardware.camera2.CameraAccessException;
-import android.hardware.camera2.CameraCaptureSession;
-import android.hardware.camera2.CameraCharacteristics;
-import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
-import android.hardware.camera2.CameraMetadata;
-import android.hardware.camera2.CaptureRequest;
-import android.hardware.camera2.CaptureResult;
-import android.hardware.camera2.TotalCaptureResult;
-import android.hardware.camera2.params.OutputConfiguration;
-import android.hardware.camera2.params.SessionConfiguration;
-import android.hardware.camera2.params.StreamConfigurationMap;
-import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
-import android.util.Range;
-import android.util.Size;
-import android.util.SizeF;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
-import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import java.util.concurrent.Executor;
 
 /**
- * Capture app for GaussCapture.
+ * Capture screen.
  *
- * <p>This app does not try to take nicer video than the stock camera. It records what the stock
- * camera discards, and removes the operator mistakes that no amount of careful instruction
- * reliably prevents:
+ * <p>The operator is holding a phone at arm's length and walking in a circle. Everything here
+ * follows from that: what to shoot is stated in words at the top, elapsed time is shown against
+ * the take's target so nobody has to count, controls are 48dp and spaced, and the only thing that
+ * ever interrupts is a warning that the phone is moving fast enough to blur the frame.
  *
- * <ul>
- *   <li><b>Locked exposure, white balance and focus.</b> Auto algorithms drift across a capture and
- *       break the brightness-constancy assumption reconstruction relies on. Correcting that
- *       afterwards is worth several dB; not breaking it costs nothing.
- *   <li><b>Stabilisation off.</b> Optical and digital stabilisation warp the image per frame, which
- *       invalidates a single shared intrinsic model. A correctness requirement, not a preference.
- *   <li><b>One fixed lens.</b> The stock camera silently switches between ultra-wide, wide and
- *       telephoto as you zoom, changing intrinsics mid-capture.
- *   <li><b>Camera intrinsics</b> read from the device rather than solved for.
- *   <li><b>IMU at the hardware maximum</b>, timestamped in the same clock as the video frames
- *       wherever the device reports {@code TIMESTAMP_SOURCE_REALTIME} -- alignment a browser
- *       cannot provide at any price.
- * </ul>
- *
- * <p>Sessions land under the app's external files dir, retrievable with {@code adb pull} and
- * needing no runtime storage permission.
+ * <p>Technical readouts are deliberately marginal. During a take they are noise; the useful
+ * information is "am I moving too fast" and "am I done yet".
  */
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements CameraController.Listener {
 
     private static final int PERMISSION_REQUEST = 1;
 
-    private static final int TARGET_WIDTH = 1920;
-    private static final int TARGET_HEIGHT = 1080;
-    private static final int TARGET_FPS = 30;
-    /** Generous, because compression artefacts are a confound we would rather not introduce. */
-    private static final int VIDEO_BITRATE = 24_000_000;
-
     /**
-     * The capture protocol, one tap each.
+     * Blur, in pixels, above which the capture is warned about.
      *
-     * <p>Typing a filename one-handed while holding a phone at arm's length is exactly the kind of
-     * friction that produces mislabelled data, and mislabelled data is worse than none. The last
-     * two entries are expected to fail: a model trained only on successes learns nothing, and
-     * zero-parallax and moving-subject captures are the two failure modes worth having.
+     * <p>Around one pixel of smear is invisible and around three is clearly soft; two is a
+     * defensible line that warns before a pass is ruined without nagging during normal walking.
+     * It is a display threshold on a physically computed quantity, not a quality score.
      */
-    private static final String[][] PRESETS = {
-            {"A_good", "Locked settings. Slow full orbit, subject centred. ~60s"},
-            {"B_normal", "Normal walking pace, one loop. ~30s"},
-            {"C_fast", "Deliberately fast and jerky. ~20s"},
-            {"D_rotation", "Stand still, rotate the phone only. Should fail. ~20s"},
-            {"E_subject", "Phone still, subject moves. Should fail. ~20s"},
-    };
+    private static final float BLUR_WARN_PIXELS = 2.0f;
+    /** Hysteresis, so the banner does not flicker at the boundary. */
+    private static final float BLUR_CLEAR_PIXELS = 1.4f;
+    private static final long BLUR_MIN_VISIBLE_MS = 900;
 
     private TextureView previewView;
-    private TextView statusView;
+    private TextView presetNameView;
+    private TextView presetHintView;
+    private TextView coachView;
     private TextView timerView;
-    private TextView hintView;
-    private LinearLayout presetRow;
+    private TextView techView;
+    private LinearLayout hudView;
+    private ProgressBar progressView;
     private Button recordButton;
+    private Button presetButton;
+    private Button takesButton;
 
-    private CameraManager cameraManager;
-    private CameraDevice cameraDevice;
-    private CameraCaptureSession captureSession;
-    private CaptureRequest.Builder requestBuilder;
-    private String cameraId;
-    private CameraCharacteristics characteristics;
-    private int sensorOrientation;
-    private Size previewSize = new Size(TARGET_WIDTH, TARGET_HEIGHT);
-
-    private MediaRecorder mediaRecorder;
+    private CameraController camera;
+    private SensorLogger sensors;
     private HandlerThread backgroundThread;
     private Handler backgroundHandler;
-    private Executor backgroundExecutor;
+    private final Handler uiHandler = new Handler();
 
-    private SensorManager sensorManager;
-    private final List<Sensor> sensors = new ArrayList<>();
-    private BufferedWriter imuWriter;
-    private BufferedWriter frameWriter;
-    private volatile int imuSamples;
-    private volatile int frameCount;
-
+    private Preset preset = Preset.ALL[0];
     private volatile boolean recording;
     private File sessionDir;
-    private String selectedPreset = PRESETS[0][0];
-    private long recordingStartRealtimeNanos;
-    private long recordingStartUptimeNanos;
-    private long recordingStartWallMillis;
-    private Float lockedFocusDistance;
-    private Long lastIso;
-    private Long lastExposureNanos;
+    private long startRealtimeNanos;
+    private long startUptimeNanos;
+    private long startWallMillis;
+    private long coachShownAt;
+    private boolean coachVisible;
 
-    private final Handler uiHandler = new Handler();
-    private final Runnable timerTick = new Runnable() {
+    private final Runnable tick = new Runnable() {
         @Override
         public void run() {
             if (!recording) {
                 return;
             }
-            long seconds =
-                    (SystemClock.elapsedRealtimeNanos() - recordingStartRealtimeNanos) / 1_000_000_000L;
-            timerView.setText(String.format(Locale.US, "%02d:%02d", seconds / 60, seconds % 60));
-            statusView.setText(String.format(Locale.US,
-                    "REC %s\nframes %d   imu %d\niso %s   exp %s ms",
-                    selectedPreset, frameCount, imuSamples,
-                    lastIso == null ? "?" : lastIso.toString(),
-                    lastExposureNanos == null
-                            ? "?" : String.format(Locale.US, "%.1f", lastExposureNanos / 1e6)));
-            uiHandler.postDelayed(this, 250);
+            long elapsedMs =
+                    (SystemClock.elapsedRealtimeNanos() - startRealtimeNanos) / 1_000_000L;
+            int seconds = (int) (elapsedMs / 1000);
+            timerView.setText(String.format(Locale.US, "%d:%02d / %d:%02d",
+                    seconds / 60, seconds % 60,
+                    preset.targetSeconds / 60, preset.targetSeconds % 60));
+            progressView.setProgress(
+                    (int) Math.min(1000, elapsedMs * 1000 / (preset.targetSeconds * 1000L)));
+            updateCoach();
+            uiHandler.postDelayed(this, 200);
         }
     };
 
@@ -173,17 +121,20 @@ public class MainActivity extends Activity {
         setContentView(R.layout.main);
 
         previewView = findViewById(R.id.preview);
-        statusView = findViewById(R.id.status);
+        presetNameView = findViewById(R.id.presetName);
+        presetHintView = findViewById(R.id.presetHint);
+        coachView = findViewById(R.id.coach);
         timerView = findViewById(R.id.timer);
-        hintView = findViewById(R.id.hint);
-        presetRow = findViewById(R.id.presets);
+        techView = findViewById(R.id.tech);
+        hudView = findViewById(R.id.hud);
+        progressView = findViewById(R.id.progress);
         recordButton = findViewById(R.id.record);
+        presetButton = findViewById(R.id.presetButton);
+        takesButton = findViewById(R.id.takesButton);
 
-        cameraManager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
-        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
-
-        buildPresetChips();
-        timerView.setVisibility(View.GONE);
+        sensors = new SensorLogger((SensorManager) getSystemService(Context.SENSOR_SERVICE));
+        camera = new CameraController(this, previewView,
+                (CameraManager) getSystemService(Context.CAMERA_SERVICE), this);
 
         recordButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -195,68 +146,48 @@ public class MainActivity extends Activity {
                 }
             }
         });
+        presetButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showPresetChooser();
+            }
+        });
+        takesButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showTakes();
+            }
+        });
+
+        showPreset(preset);
+        refreshTakesButton();
 
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, PERMISSION_REQUEST);
         }
     }
 
-    private void buildPresetChips() {
-        presetRow.removeAllViews();
-        for (int i = 0; i < PRESETS.length; i++) {
-            final String name = PRESETS[i][0];
-            final String hint = PRESETS[i][1];
-            Button chip = new Button(this);
-            chip.setText(name);
-            chip.setAllCaps(false);
-            chip.setTextSize(13);
-            chip.setPadding(34, 12, 34, 12);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            params.setMarginEnd(10);
-            chip.setLayoutParams(params);
-            chip.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    if (recording) {
-                        return;  // Changing the label mid-take would mislabel the data.
-                    }
-                    selectedPreset = name;
-                    hintView.setText(hint);
-                    refreshChips();
-                }
-            });
-            presetRow.addView(chip);
-        }
-        hintView.setText(PRESETS[0][1]);
-        refreshChips();
-    }
-
-    private void refreshChips() {
-        for (int i = 0; i < presetRow.getChildCount(); i++) {
-            Button chip = (Button) presetRow.getChildAt(i);
-            boolean on = PRESETS[i][0].equals(selectedPreset);
-            chip.setBackgroundResource(on ? R.drawable.chip_on : R.drawable.chip);
-            chip.setTextColor(on ? 0xFF14141A : 0xFFECEAF0);
-        }
-    }
-
     @Override
     protected void onResume() {
         super.onResume();
-        startBackgroundThread();
+        backgroundThread = new HandlerThread("GaussCaptureCamera");
+        backgroundThread.start();
+        backgroundHandler = new Handler(backgroundThread.getLooper());
+        camera.setHandler(backgroundHandler);
+        sensors.listen(backgroundHandler);
+
         if (previewView.isAvailable()) {
-            openCamera();
+            camera.open(displayRotation());
         } else {
             previewView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
                 @Override
                 public void onSurfaceTextureAvailable(SurfaceTexture s, int w, int h) {
-                    openCamera();
+                    camera.open(displayRotation());
                 }
 
                 @Override
                 public void onSurfaceTextureSizeChanged(SurfaceTexture s, int w, int h) {
-                    configureTransform(w, h);
+                    camera.applyTransform(displayRotation());
                 }
 
                 @Override
@@ -275,32 +206,34 @@ public class MainActivity extends Activity {
         if (recording) {
             stopRecording();
         }
-        closeCamera();
-        stopBackgroundThread();
+        sensors.stopListening();
+        camera.close();
+        if (backgroundThread != null) {
+            backgroundThread.quitSafely();
+            try {
+                backgroundThread.join();
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            backgroundThread = null;
+            backgroundHandler = null;
+        }
         super.onPause();
     }
 
     /**
-     * The activity follows the phone rather than forcing a grip.
+     * The app follows the phone rather than forcing a grip.
      *
-     * <p>The pipeline does not care whether a capture is portrait or landscape -- what matters is
-     * that the orientation is constant within a take and recorded accurately. So rotation is free
-     * while idle and frozen during a recording, since the encoder's frame geometry is fixed when
-     * the session is configured and cannot change underneath it.
+     * <p>The pipeline does not care whether a capture is portrait or landscape; what matters is
+     * that the orientation is constant within a take. So rotation is free while idle and frozen
+     * during a recording, because the encoder's frame geometry is fixed when the session is
+     * configured and cannot change underneath it.
      */
     @Override
     public void onConfigurationChanged(android.content.res.Configuration config) {
         super.onConfigurationChanged(config);
-        configureTransform(previewView.getWidth(), previewView.getHeight());
+        camera.applyTransform(displayRotation());
     }
-
-    private void lockOrientation(boolean locked) {
-        setRequestedOrientation(locked
-                ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
-                : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER);
-    }
-
-    // ---------------------------------------------------------------- orientation
 
     private int displayRotation() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && getDisplay() != null) {
@@ -309,546 +242,160 @@ public class MainActivity extends Activity {
         return getWindowManager().getDefaultDisplay().getRotation();
     }
 
-    private static int rotationDegrees(int rotation) {
-        switch (rotation) {
-            case Surface.ROTATION_90: return 90;
-            case Surface.ROTATION_180: return 180;
-            case Surface.ROTATION_270: return 270;
-            default: return 0;
-        }
-    }
+    // ---------------------------------------------------------------- camera callbacks
 
-    /**
-     * Degrees the camera image must be rotated to appear upright on screen.
-     *
-     * <p>The sensor is mounted at a fixed angle relative to the device's natural orientation --
-     * 90 degrees on this phone -- so the buffer arrives rotated by that much regardless of how the
-     * device is being held. Subtracting the current display rotation gives what is left to correct.
-     */
-    private int previewRotation() {
-        return (sensorOrientation - rotationDegrees(displayRotation()) + 360) % 360;
-    }
-
-    /**
-     * Undoes TextureView's stretch, rotates the image upright, then fits it to the view.
-     *
-     * <p>TextureView always scales the surface buffer to the view's bounds, ignoring aspect ratio,
-     * and applies any transform on top of that. So the transform has to be built in three distinct
-     * steps, and the order and the dimensions used at each step both matter:
-     *
-     * <ol>
-     *   <li>Map the view rect onto the buffer's <em>true</em> dimensions, which cancels the
-     *       stretch. Using the post-rotation dimensions here is wrong -- it squeezes a 16:9 image
-     *       into a 9:16 box before rotating, which is distortion no later step can undo.
-     *   <li>Rotate by (sensor orientation - display rotation).
-     *   <li><em>Now</em> the on-screen extent has swapped for a quarter turn, so the fit scale is
-     *       computed against the swapped dimensions.
-     * </ol>
-     *
-     * <p>The last step fits rather than fills. Filling would centre-crop, hiding part of what is
-     * actually being recorded -- unacceptable in a capture app, where the whole job of the preview
-     * is to show the operator the framing they are committing to. Letterboxing is the honest
-     * choice.
-     */
-    private void configureTransform(int viewWidth, int viewHeight) {
-        if (viewWidth == 0 || viewHeight == 0) {
-            return;
-        }
-        int rotate = previewRotation();
-        RectF viewRect = new RectF(0, 0, viewWidth, viewHeight);
-        float centerX = viewRect.centerX();
-        float centerY = viewRect.centerY();
-
-        // Step 1: cancel the stretch, using the buffer as it actually is.
-        RectF bufferRect = new RectF(0, 0, previewSize.getWidth(), previewSize.getHeight());
-        bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY());
-
-        Matrix matrix = new Matrix();
-        matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL);
-
-        // Step 2: put the scene upright.
-        matrix.postRotate(rotate, centerX, centerY);
-
-        // Step 3: fit the rotated extent inside the view.
-        float shownWidth = (rotate % 180 == 0) ? previewSize.getWidth() : previewSize.getHeight();
-        float shownHeight = (rotate % 180 == 0) ? previewSize.getHeight() : previewSize.getWidth();
-        float scale = Math.min(viewWidth / shownWidth, viewHeight / shownHeight);
-        matrix.postScale(scale, scale, centerX, centerY);
-
-        previewView.setTransform(matrix);
-    }
-
-    // ---------------------------------------------------------------- camera
-
-    /**
-     * Chooses the main back camera explicitly.
-     *
-     * <p>Modern phones expose several back-facing physical cameras and the stock app switches
-     * between them as you zoom, changing intrinsics partway through a capture. We pick one and stay
-     * on it: among back-facing cameras, the one whose focal length is nearest the main lens.
-     * Ultra-wide sits near 2mm and telephoto near 7mm or beyond.
-     */
-    private String selectBackCamera() throws CameraAccessException {
-        String best = null;
-        float bestScore = Float.MAX_VALUE;
-        for (String id : cameraManager.getCameraIdList()) {
-            CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
-            Integer facing = c.get(CameraCharacteristics.LENS_FACING);
-            if (facing == null || facing != CameraCharacteristics.LENS_FACING_BACK) {
-                continue;
-            }
-            float[] focals = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-            if (focals == null || focals.length == 0) {
-                continue;
-            }
-            float score = Math.abs(focals[0] - 5.0f);
-            if (score < bestScore) {
-                bestScore = score;
-                best = id;
-            }
-        }
-        return best;
-    }
-
-    /** Nearest available size to the target, preferring an exact match. */
-    private Size chooseSize(Size[] choices) {
-        if (choices == null || choices.length == 0) {
-            return new Size(TARGET_WIDTH, TARGET_HEIGHT);
-        }
-        Size best = choices[0];
-        long bestCost = Long.MAX_VALUE;
-        for (Size size : choices) {
-            long cost = Math.abs((long) size.getWidth() - TARGET_WIDTH)
-                    + Math.abs((long) size.getHeight() - TARGET_HEIGHT);
-            if (cost < bestCost) {
-                bestCost = cost;
-                best = size;
-            }
-        }
-        return best;
-    }
-
-    private void openCamera() {
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            statusView.setText("camera permission not granted");
-            return;
-        }
-        try {
-            cameraId = selectBackCamera();
-            if (cameraId == null) {
-                statusView.setText("no back camera found");
-                return;
-            }
-            characteristics = cameraManager.getCameraCharacteristics(cameraId);
-            Integer orientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
-            sensorOrientation = orientation == null ? 90 : orientation;
-
-            StreamConfigurationMap map = characteristics.get(
-                    CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-            if (map != null) {
-                previewSize = chooseSize(map.getOutputSizes(MediaRecorder.class));
-            }
-
-            cameraManager.openCamera(cameraId, new CameraDevice.StateCallback() {
-                @Override
-                public void onOpened(CameraDevice device) {
-                    cameraDevice = device;
-                    startPreview();
-                }
-
-                @Override
-                public void onDisconnected(CameraDevice device) {
-                    device.close();
-                    cameraDevice = null;
-                }
-
-                @Override
-                public void onError(CameraDevice device, int error) {
-                    device.close();
-                    cameraDevice = null;
-                    setStatus("camera error " + error);
-                }
-            }, backgroundHandler);
-        } catch (CameraAccessException | SecurityException e) {
-            statusView.setText("open failed: " + e.getMessage());
-        }
-    }
-
-    private void closeCamera() {
-        if (captureSession != null) {
-            captureSession.close();
-            captureSession = null;
-        }
-        if (cameraDevice != null) {
-            cameraDevice.close();
-            cameraDevice = null;
-        }
-        if (mediaRecorder != null) {
-            mediaRecorder.release();
-            mediaRecorder = null;
-        }
-    }
-
-    private Surface newPreviewSurface() {
-        SurfaceTexture texture = previewView.getSurfaceTexture();
-        texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
+    @Override
+    public void onReady(final String summary) {
         uiHandler.post(new Runnable() {
             @Override
             public void run() {
-                configureTransform(previewView.getWidth(), previewView.getHeight());
+                techView.setText(summary);
             }
         });
-        return new Surface(texture);
     }
 
-    /** Preview only, with the auto algorithms running so they converge before we lock them. */
-    private void startPreview() {
-        try {
-            Surface previewSurface = newPreviewSurface();
-            requestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-            requestBuilder.addTarget(previewSurface);
-            applyFixedCaptureSettings(requestBuilder, false);
-
-            List<OutputConfiguration> outputs =
-                    Collections.singletonList(new OutputConfiguration(previewSurface));
-            cameraDevice.createCaptureSession(new SessionConfiguration(
-                    SessionConfiguration.SESSION_REGULAR, outputs, backgroundExecutor,
-                    new CameraCaptureSession.StateCallback() {
-                        @Override
-                        public void onConfigured(CameraCaptureSession session) {
-                            captureSession = session;
-                            try {
-                                session.setRepeatingRequest(requestBuilder.build(),
-                                        metadataCallback, backgroundHandler);
-                                setStatus(describeCamera());
-                            } catch (CameraAccessException e) {
-                                setStatus("preview failed: " + e.getMessage());
-                            }
-                        }
-
-                        @Override
-                        public void onConfigureFailed(CameraCaptureSession session) {
-                            setStatus("preview session config failed");
-                        }
-                    }));
-        } catch (CameraAccessException e) {
-            setStatus("preview error: " + e.getMessage());
-        }
+    @Override
+    public void onError(final String message) {
+        uiHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                techView.setText(message);
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+            }
+        });
     }
+
+    @Override
+    public void onFrameMetadata(long exposureNanos, int iso) {
+        // Consumed by updateCoach on the UI tick; nothing to do per frame.
+    }
+
+    // ---------------------------------------------------------------- guidance
 
     /**
-     * Applies the settings that make a capture reconstructable.
+     * Shows a warning when the phone is rotating fast enough to smear the frame.
      *
-     * @param lock when true, freeze exposure, white balance and focus for the duration of a take
+     * <p>The quantity is computed, not guessed: a camera turning at omega radians per second
+     * during an exposure of t seconds sweeps the image by omega*t radians, which at a focal length
+     * of f pixels is omega*t*f pixels of blur. All three come from the device -- gyroscope,
+     * CaptureResult, and reported intrinsics -- so this is geometry rather than a heuristic, which
+     * is what makes it honest to show while the project's own quality score is still unvalidated.
      */
-    private void applyFixedCaptureSettings(CaptureRequest.Builder b, boolean lock) {
-        b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-                CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF);
-        b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
-                CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF);
-
-        b.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-        b.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED);
-        b.set(CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF);
-        b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(TARGET_FPS, TARGET_FPS));
-
-        // Report geometry as captured, so the distortion coefficients we record describe the
-        // pixels we recorded rather than a corrected version of them.
-        if (characteristics.get(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES)
-                != null) {
-            b.set(CaptureRequest.DISTORTION_CORRECTION_MODE,
-                    CameraMetadata.DISTORTION_CORRECTION_MODE_OFF);
+    private void updateCoach() {
+        float focalPixels = camera.focalPixels();
+        if (focalPixels <= 0) {
+            return;  // Device does not report intrinsics; no defensible number to show.
         }
+        float exposureSeconds = camera.lastExposureNanos() / 1e9f;
+        float blur = SensorLogger.blurPixels(sensors.angularRate(), exposureSeconds, focalPixels);
 
-        if (lock) {
-            b.set(CaptureRequest.CONTROL_AE_LOCK, true);
-            b.set(CaptureRequest.CONTROL_AWB_LOCK, true);
-            b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
-            if (lockedFocusDistance != null) {
-                b.set(CaptureRequest.LENS_FOCUS_DISTANCE, lockedFocusDistance);
-            }
-        } else {
-            b.set(CaptureRequest.CONTROL_AE_LOCK, false);
-            b.set(CaptureRequest.CONTROL_AWB_LOCK, false);
-            b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+        long now = SystemClock.uptimeMillis();
+        if (!coachVisible && blur > BLUR_WARN_PIXELS) {
+            coachView.setText("Slow down");
+            coachView.setVisibility(View.VISIBLE);
+            coachVisible = true;
+            coachShownAt = now;
+        } else if (coachVisible && blur < BLUR_CLEAR_PIXELS
+                && now - coachShownAt > BLUR_MIN_VISIBLE_MS) {
+            coachView.setVisibility(View.INVISIBLE);
+            coachVisible = false;
         }
     }
-
-    /** Records what the camera actually did, per frame, rather than what we asked for. */
-    private final CameraCaptureSession.CaptureCallback metadataCallback =
-            new CameraCaptureSession.CaptureCallback() {
-                @Override
-                public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request,
-                                               TotalCaptureResult result) {
-                    Float focus = result.get(CaptureResult.LENS_FOCUS_DISTANCE);
-                    if (focus != null) {
-                        lockedFocusDistance = focus;
-                    }
-                    lastIso = longOrNull(result.get(CaptureResult.SENSOR_SENSITIVITY));
-                    lastExposureNanos = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
-
-                    if (!recording) {
-                        return;
-                    }
-                    try {
-                        JSONObject row = new JSONObject();
-                        Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
-                        row.put("t_ns", timestamp == null ? JSONObject.NULL : timestamp);
-                        row.put("iso", lastIso == null ? JSONObject.NULL : lastIso);
-                        row.put("exposure_ns", lastExposureNanos == null
-                                ? JSONObject.NULL : lastExposureNanos);
-                        row.put("focus_distance", focus == null ? JSONObject.NULL : focus);
-                        Float aperture = result.get(CaptureResult.LENS_APERTURE);
-                        row.put("aperture", aperture == null ? JSONObject.NULL : aperture);
-                        Float focal = result.get(CaptureResult.LENS_FOCAL_LENGTH);
-                        row.put("focal_length_mm", focal == null ? JSONObject.NULL : focal);
-                        row.put("frame", frameCount);
-                        synchronized (MainActivity.this) {
-                            if (frameWriter != null) {
-                                frameWriter.write(row.toString());
-                                frameWriter.write("\n");
-                            }
-                        }
-                        frameCount++;
-                    } catch (Exception ignored) {
-                        // A dropped metadata row must never interrupt a recording.
-                    }
-                }
-            };
 
     // ---------------------------------------------------------------- recording
 
     private void startRecording() {
-        if (cameraDevice == null) {
-            setStatus("camera not ready");
+        sessionDir = new File(getExternalFilesDir(null), preset.id + "_"
+                + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()));
+        if (!sessionDir.mkdirs() && !sessionDir.isDirectory()) {
+            onError("Cannot create a folder for this take");
             return;
         }
+
+        startRealtimeNanos = SystemClock.elapsedRealtimeNanos();
+        startUptimeNanos = System.nanoTime();
+        startWallMillis = System.currentTimeMillis();
+
         try {
-            sessionDir = new File(getExternalFilesDir(null), selectedPreset + "_"
-                    + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()));
-            if (!sessionDir.mkdirs() && !sessionDir.isDirectory()) {
-                setStatus("cannot create session dir");
-                return;
-            }
-
-            frameCount = 0;
-            imuSamples = 0;
-            imuWriter = new BufferedWriter(new FileWriter(new File(sessionDir, "imu.jsonl")));
-            frameWriter = new BufferedWriter(new FileWriter(new File(sessionDir, "frames.jsonl")));
-
-            if (captureSession != null) {
-                captureSession.close();
-                captureSession = null;
-            }
-
-            mediaRecorder = buildRecorder(new File(sessionDir, "video.mp4"));
-            mediaRecorder.prepare();
-
-            Surface previewSurface = newPreviewSurface();
-            Surface recorderSurface = mediaRecorder.getSurface();
-
-            requestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
-            requestBuilder.addTarget(previewSurface);
-            requestBuilder.addTarget(recorderSurface);
-            // Lock now: the preview has been running, so the auto algorithms have converged and
-            // the values they settled on are the ones we freeze.
-            applyFixedCaptureSettings(requestBuilder, true);
-
-            List<OutputConfiguration> outputs = Arrays.asList(
-                    new OutputConfiguration(previewSurface),
-                    new OutputConfiguration(recorderSurface));
-
-            cameraDevice.createCaptureSession(new SessionConfiguration(
-                    SessionConfiguration.SESSION_REGULAR, outputs, backgroundExecutor,
-                    new CameraCaptureSession.StateCallback() {
-                        @Override
-                        public void onConfigured(CameraCaptureSession session) {
-                            captureSession = session;
-                            try {
-                                session.setRepeatingRequest(requestBuilder.build(),
-                                        metadataCallback, backgroundHandler);
-                                beginRecordingClockAndSensors();
-                            } catch (CameraAccessException e) {
-                                setStatus("record request failed: " + e.getMessage());
-                            }
-                        }
-
-                        @Override
-                        public void onConfigureFailed(CameraCaptureSession session) {
-                            setStatus("record session config failed");
-                        }
-                    }));
+            sensors.start(new File(sessionDir, "imu.jsonl"), startRealtimeNanos);
         } catch (Exception e) {
-            setStatus("start failed: " + e.getMessage());
+            onError("Cannot write sensor data: " + e.getMessage());
+            return;
         }
-    }
 
-    /** Stamps both clocks at t=0, starts the sensors, then the encoder. */
-    private void beginRecordingClockAndSensors() {
-        recordingStartRealtimeNanos = SystemClock.elapsedRealtimeNanos();
-        recordingStartUptimeNanos = System.nanoTime();
-        recordingStartWallMillis = System.currentTimeMillis();
-
-        registerSensors();
-        mediaRecorder.start();
-        recording = true;
-
-        uiHandler.post(new Runnable() {
+        camera.startRecording(sessionDir, displayRotation(), new CameraController.RecordingCallback() {
             @Override
-            public void run() {
-                lockOrientation(true);
-                recordButton.setBackgroundResource(R.drawable.btn_stop);
-                timerView.setVisibility(View.VISIBLE);
-                timerView.setText("00:00");
-                hintView.setText("recording " + selectedPreset);
-                uiHandler.post(timerTick);
+            public void onStarted() {
+                uiHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        recording = true;
+                        buzz(30);
+                        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LOCKED);
+                        recordButton.setBackgroundResource(R.drawable.btn_stop);
+                        recordButton.setContentDescription("Stop recording");
+                        hudView.setVisibility(View.VISIBLE);
+                        presetButton.setEnabled(false);
+                        takesButton.setEnabled(false);
+                        uiHandler.post(tick);
+                    }
+                });
+            }
+
+            @Override
+            public void onFailed(String message) {
+                sensors.closeFile();
+                deleteRecursively(sessionDir);
+                onError(message);
             }
         });
     }
 
     private void stopRecording() {
         recording = false;
-        uiHandler.removeCallbacks(timerTick);
-        unregisterSensors();
+        uiHandler.removeCallbacks(tick);
+        boolean ok = camera.stopRecording();
+        sensors.closeFile();
+        buzz(20);
 
-        boolean tooShort = false;
-        try {
-            if (mediaRecorder != null) {
-                mediaRecorder.stop();
-            }
-        } catch (RuntimeException e) {
-            // stop() throws when no frames were written -- a take shorter than one frame.
-            tooShort = true;
-        } finally {
-            if (mediaRecorder != null) {
-                mediaRecorder.reset();
-                mediaRecorder.release();
-                mediaRecorder = null;
-            }
-        }
-
-        synchronized (this) {
-            closeQuietly(imuWriter);
-            closeQuietly(frameWriter);
-            imuWriter = null;
-            frameWriter = null;
-        }
-
-        final String summary;
-        if (tooShort) {
+        String message;
+        if (!ok) {
             deleteRecursively(sessionDir);
-            summary = "take too short, discarded";
+            message = "Take was too short, discarded";
         } else {
             writeManifest();
-            summary = String.format(Locale.US, "saved %s\n%d frames   %d imu samples",
-                    sessionDir.getName(), frameCount, imuSamples);
+            long seconds = (SystemClock.elapsedRealtimeNanos() - startRealtimeNanos) / 1_000_000_000L;
+            message = String.format(Locale.US, "Saved %s · %ds · %d frames",
+                    preset.id, seconds, camera.frameCount());
         }
 
+        final String toast = message;
         uiHandler.post(new Runnable() {
             @Override
             public void run() {
-                lockOrientation(false);
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_USER);
                 recordButton.setBackgroundResource(R.drawable.btn_record);
-                timerView.setVisibility(View.GONE);
-                hintView.setText(summary.split("\n")[0]);
-                statusView.setText(summary);
+                recordButton.setContentDescription("Start recording");
+                hudView.setVisibility(View.INVISIBLE);
+                coachView.setVisibility(View.INVISIBLE);
+                coachVisible = false;
+                presetButton.setEnabled(true);
+                takesButton.setEnabled(true);
+                progressView.setProgress(0);
+                refreshTakesButton();
+                Toast.makeText(MainActivity.this, toast, Toast.LENGTH_SHORT).show();
             }
         });
 
-        startPreview();
+        camera.startPreview(displayRotation());
     }
-
-    private MediaRecorder buildRecorder(File output) {
-        MediaRecorder recorder = new MediaRecorder(this);
-        recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
-        recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-        recorder.setOutputFile(output.getAbsolutePath());
-        recorder.setVideoEncodingBitRate(VIDEO_BITRATE);
-        recorder.setVideoFrameRate(TARGET_FPS);
-        recorder.setVideoSize(previewSize.getWidth(), previewSize.getHeight());
-        recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-        // Without this the file plays back rotated by the sensor mounting angle, and every
-        // downstream tool inherits the mistake.
-        recorder.setOrientationHint(previewRotation());
-        return recorder;
-    }
-
-    // ---------------------------------------------------------------- sensors
-
-    private void registerSensors() {
-        sensors.clear();
-        addSensor(Sensor.TYPE_ACCELEROMETER);
-        addSensor(Sensor.TYPE_GYROSCOPE);
-        addSensor(Sensor.TYPE_ROTATION_VECTOR);
-        // The uncalibrated variants expose the raw signal plus the bias the system is subtracting,
-        // which is what you need if you ever intend to integrate it yourself.
-        addSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED);
-        addSensor(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED);
-
-        for (Sensor sensor : sensors) {
-            sensorManager.registerListener(sensorListener, sensor,
-                    SensorManager.SENSOR_DELAY_FASTEST, backgroundHandler);
-        }
-    }
-
-    private void addSensor(int type) {
-        Sensor sensor = sensorManager.getDefaultSensor(type);
-        if (sensor != null) {
-            sensors.add(sensor);
-        }
-    }
-
-    private void unregisterSensors() {
-        sensorManager.unregisterListener(sensorListener);
-        sensors.clear();
-    }
-
-    private final SensorEventListener sensorListener = new SensorEventListener() {
-        @Override
-        public void onSensorChanged(SensorEvent event) {
-            if (!recording) {
-                return;
-            }
-            try {
-                JSONObject row = new JSONObject();
-                row.put("type", event.sensor.getStringType());
-                // SensorEvent.timestamp is elapsedRealtimeNanos, the same clock the camera reports
-                // when its timestamp source is REALTIME. Both the absolute and the
-                // relative-to-start forms are written: the absolute one aligns with frame
-                // timestamps, the relative one is what a human can read.
-                row.put("t_ns", event.timestamp);
-                row.put("t_rel_ns", event.timestamp - recordingStartRealtimeNanos);
-                JSONArray values = new JSONArray();
-                for (float v : event.values) {
-                    values.put((double) v);
-                }
-                row.put("v", values);
-                row.put("accuracy", event.accuracy);
-                synchronized (MainActivity.this) {
-                    if (imuWriter != null) {
-                        imuWriter.write(row.toString());
-                        imuWriter.write("\n");
-                    }
-                }
-                imuSamples++;
-            } catch (Exception ignored) {
-                // A dropped sample must never interrupt a recording.
-            }
-        }
-
-        @Override
-        public void onAccuracyChanged(Sensor sensor, int accuracy) { }
-    };
-
-    // ---------------------------------------------------------------- manifest
 
     /**
-     * Writes what the desktop pipeline needs in order to interpret the recording.
+     * Writes what the desktop pipeline needs to interpret the recording.
      *
-     * <p>Most importantly it records the camera's timestamp source. If that is not
-     * {@code REALTIME}, video and IMU timestamps live in different clocks and alignment needs the
-     * offset also written here. Saying so explicitly is the difference between data that can be
-     * used and data that merely looks usable.
+     * <p>The timestamp source matters most. If it is not REALTIME, video and IMU timestamps live
+     * in different clocks and alignment needs the offset recorded here; saying so explicitly is
+     * the difference between data that can be used and data that merely looks usable.
      */
     private void writeManifest() {
         try {
@@ -856,29 +403,31 @@ public class MainActivity extends Activity {
             manifest.put("capturepack_version", "0.1");
             manifest.put("session_id", UUID.randomUUID().toString());
             manifest.put("session_name", sessionDir.getName());
-            manifest.put("preset", selectedPreset);
-            manifest.put("capture_type", "static_scene");
-            manifest.put("created_at", isoTime(recordingStartWallMillis));
-            manifest.put("app", "gausscapture-android/0.1");
+            manifest.put("preset", preset.id);
+            manifest.put("preset_target_seconds", preset.targetSeconds);
+            manifest.put("expected_to_fail", preset.expectedToFail);
+            manifest.put("capture_type", preset.expectedToFail && "E_subject".equals(preset.id)
+                    ? "dynamic_subject" : "static_scene");
+            manifest.put("created_at", isoTime(startWallMillis));
+            manifest.put("app", "gausscapture-android/0.2");
 
             JSONObject device = new JSONObject();
             device.put("manufacturer", Build.MANUFACTURER);
             device.put("model", Build.MODEL);
             device.put("os", "Android " + Build.VERSION.RELEASE
                     + " (API " + Build.VERSION.SDK_INT + ")");
-            device.put("camera_id", cameraId);
-            device.put("sensor_orientation", sensorOrientation);
+            device.put("camera_id", camera.cameraId());
+            device.put("sensor_orientation", camera.sensorOrientation());
             manifest.put("device", device);
 
             JSONObject video = new JSONObject();
             video.put("main_file", "video.mp4");
-            video.put("width", previewSize.getWidth());
-            video.put("height", previewSize.getHeight());
-            video.put("fps", TARGET_FPS);
+            video.put("width", camera.videoSize().getWidth());
+            video.put("height", camera.videoSize().getHeight());
+            video.put("fps", 30);
             video.put("codec", "h264");
-            video.put("bitrate", VIDEO_BITRATE);
-            video.put("orientation_hint", previewRotation());
-            video.put("frames_recorded", frameCount);
+            video.put("orientation_hint", camera.previewRotation(displayRotation()));
+            video.put("frames_recorded", camera.frameCount());
             video.put("has_audio", false);
             manifest.put("video", video);
 
@@ -893,15 +442,12 @@ public class MainActivity extends Activity {
 
             manifest.put("time_base", "nanoseconds_elapsed_realtime");
             JSONObject clocks = new JSONObject();
-            clocks.put("recording_start_elapsed_realtime_ns", recordingStartRealtimeNanos);
-            clocks.put("recording_start_uptime_ns", recordingStartUptimeNanos);
-            clocks.put("recording_start_wall_ms", recordingStartWallMillis);
-            Integer source = characteristics.get(
-                    CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE);
-            boolean realtime = source != null
-                    && source == CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME;
-            clocks.put("camera_timestamp_source", realtime ? "REALTIME" : "UNKNOWN");
-            clocks.put("camera_imu_same_clock", realtime);
+            clocks.put("recording_start_elapsed_realtime_ns", startRealtimeNanos);
+            clocks.put("recording_start_uptime_ns", startUptimeNanos);
+            clocks.put("recording_start_wall_ms", startWallMillis);
+            clocks.put("camera_timestamp_source",
+                    camera.timestampsAligned() ? "REALTIME" : "UNKNOWN");
+            clocks.put("camera_imu_same_clock", camera.timestampsAligned());
             manifest.put("clocks", clocks);
 
             JSONObject files = new JSONObject();
@@ -911,107 +457,147 @@ public class MainActivity extends Activity {
             files.put("poses", JSONObject.NULL);
             files.put("light", JSONObject.NULL);
             manifest.put("metadata_files", files);
-            manifest.put("imu_samples", imuSamples);
+            manifest.put("imu_samples", sensors.sampleCount());
 
             write(new File(sessionDir, "manifest.json"), manifest.toString(2));
-            write(new File(sessionDir, "intrinsics.json"), intrinsics().toString(2));
+            write(new File(sessionDir, "intrinsics.json"), camera.intrinsics().toString(2));
         } catch (Exception e) {
-            setStatus("manifest failed: " + e.getMessage());
+            onError("Could not write metadata: " + e.getMessage());
         }
     }
 
-    /** Camera intrinsics as the device reports them, rather than as SfM would guess them. */
-    private JSONObject intrinsics() throws Exception {
-        JSONObject out = new JSONObject();
-        out.put("source", "android_camera2_characteristics");
-        out.put("camera_id", cameraId);
+    // ---------------------------------------------------------------- preset & takes
 
-        float[] calibration = characteristics.get(
-                CameraCharacteristics.LENS_INTRINSIC_CALIBRATION);
-        if (calibration != null && calibration.length >= 5) {
-            JSONObject k = new JSONObject();
-            k.put("fx", calibration[0]);
-            k.put("fy", calibration[1]);
-            k.put("cx", calibration[2]);
-            k.put("cy", calibration[3]);
-            k.put("skew", calibration[4]);
-            k.put("note", "In pre-correction active array pixels; rescale to the recorded "
-                    + "resolution before use.");
-            out.put("intrinsic_calibration", k);
-        } else {
-            out.put("intrinsic_calibration", JSONObject.NULL);
-            out.put("intrinsic_note", "Device does not report LENS_INTRINSIC_CALIBRATION; derive "
-                    + "focal length from focal_length_mm and sensor physical size, or let "
-                    + "structure-from-motion solve it.");
-        }
+    private void showPreset(Preset chosen) {
+        preset = chosen;
+        presetNameView.setText(chosen.title);
+        presetHintView.setText(chosen.hint);
+        presetButton.setText(chosen.shortLabel());
+        timerView.setText(String.format(Locale.US, "0:00 / %d:%02d",
+                chosen.targetSeconds / 60, chosen.targetSeconds % 60));
+    }
 
-        float[] distortion = characteristics.get(CameraCharacteristics.LENS_DISTORTION);
-        if (distortion != null) {
-            JSONArray d = new JSONArray();
-            for (float v : distortion) {
-                d.put((double) v);
+    private void showPresetChooser() {
+        new AlertDialog.Builder(this)
+                .setTitle("Which shot?")
+                .setItems(Preset.menuLabels(), new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        showPreset(Preset.ALL[which]);
+                    }
+                })
+                .show();
+    }
+
+    private List<File> takes() {
+        File root = getExternalFilesDir(null);
+        File[] children = root == null ? null : root.listFiles();
+        List<File> result = new ArrayList<>();
+        if (children != null) {
+            for (File child : children) {
+                if (child.isDirectory() && new File(child, "manifest.json").exists()) {
+                    result.add(child);
+                }
             }
-            out.put("distortion_kappa", d);
-            out.put("distortion_model", "android [k1,k2,k3,p1,p2]");
+        }
+        java.util.Collections.sort(result, new Comparator<File>() {
+            @Override
+            public int compare(File a, File b) {
+                return a.getName().compareTo(b.getName());
+            }
+        });
+        return result;
+    }
+
+    private void refreshTakesButton() {
+        int count = takes().size();
+        takesButton.setText(count == 0 ? "Takes" : "Takes · " + count);
+    }
+
+    private void showTakes() {
+        final List<File> recorded = takes();
+        if (recorded.isEmpty()) {
+            // An empty state should say what to do next, not just be blank.
+            new AlertDialog.Builder(this)
+                    .setTitle("No takes yet")
+                    .setMessage("Pick a shot, then press the red button. "
+                            + "Start with A and work down the list.")
+                    .setPositiveButton("OK", null)
+                    .show();
+            return;
         }
 
-        SizeF physical = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
-        if (physical != null) {
-            JSONObject s = new JSONObject();
-            s.put("width_mm", physical.getWidth());
-            s.put("height_mm", physical.getHeight());
-            out.put("sensor_physical_size", s);
+        String[] labels = new String[recorded.size()];
+        for (int i = 0; i < recorded.size(); i++) {
+            File take = recorded.get(i);
+            labels[i] = take.getName() + "\n" + humanSize(directorySize(take));
         }
 
-        android.graphics.Rect active = characteristics.get(
-                CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE);
-        if (active != null) {
-            JSONObject a = new JSONObject();
-            a.put("width", active.width());
-            a.put("height", active.height());
-            out.put("pre_correction_active_array", a);
-        }
+        new AlertDialog.Builder(this)
+                .setTitle(recorded.size() + " take" + (recorded.size() == 1 ? "" : "s"))
+                .setItems(labels, new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        confirmDelete(recorded.get(which));
+                    }
+                })
+                .setPositiveButton("Done", null)
+                .show();
+    }
 
-        float[] focals = characteristics.get(
-                CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-        if (focals != null && focals.length > 0) {
-            out.put("focal_length_mm", focals[0]);
-        }
-        out.put("recorded_size", previewSize.getWidth() + "x" + previewSize.getHeight());
-        return out;
+    /** Deleting a take destroys minutes of walking, so it is always confirmed. */
+    private void confirmDelete(final File take) {
+        new AlertDialog.Builder(this)
+                .setTitle("Delete this take?")
+                .setMessage(take.getName() + "\nThis cannot be undone.")
+                .setNegativeButton("Keep", null)
+                .setPositiveButton("Delete", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface dialog, int which) {
+                        deleteRecursively(take);
+                        refreshTakesButton();
+                        Toast.makeText(MainActivity.this, "Deleted", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .show();
     }
 
     // ---------------------------------------------------------------- helpers
 
-    private String describeCamera() {
-        float[] focals = characteristics.get(
-                CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-        Integer source = characteristics.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE);
-        boolean realtime = source != null
-                && source == CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME;
-        float[] calibration = characteristics.get(
-                CameraCharacteristics.LENS_INTRINSIC_CALIBRATION);
-        return String.format(Locale.US,
-                "cam %s  %.1fmm  %dx%d@%d\nAE/AWB/AF lock  stabilisation off\n"
-                        + "clock %s   intrinsics %s",
-                cameraId,
-                focals == null || focals.length == 0 ? 0f : focals[0],
-                previewSize.getWidth(), previewSize.getHeight(), TARGET_FPS,
-                realtime ? "REALTIME" : "UNKNOWN",
-                calibration != null ? "on-device" : "not reported");
+    /** Tactile confirmation for start and stop, where a glance at the screen is inconvenient. */
+    private void buzz(long millis) {
+        Vibrator vibrator;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VibratorManager vm = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+            vibrator = vm == null ? null : vm.getDefaultVibrator();
+        } else {
+            vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        }
+        if (vibrator != null && vibrator.hasVibrator()) {
+            vibrator.vibrate(VibrationEffect.createOneShot(millis,
+                    VibrationEffect.DEFAULT_AMPLITUDE));
+        }
     }
 
-    private void setStatus(final String text) {
-        uiHandler.post(new Runnable() {
-            @Override
-            public void run() {
-                statusView.setText(text);
+    private static long directorySize(File dir) {
+        long total = 0;
+        File[] children = dir.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                total += child.isDirectory() ? directorySize(child) : child.length();
             }
-        });
+        }
+        return total;
     }
 
-    private static Long longOrNull(Integer value) {
-        return value == null ? null : value.longValue();
+    private static String humanSize(long bytes) {
+        if (bytes < 1024) {
+            return bytes + " B";
+        }
+        if (bytes < 1024 * 1024) {
+            return (bytes / 1024) + " KB";
+        }
+        return String.format(Locale.US, "%.0f MB", bytes / 1024.0 / 1024.0);
     }
 
     private static String isoTime(long millis) {
@@ -1020,21 +606,9 @@ public class MainActivity extends Activity {
         return format.format(new Date(millis));
     }
 
-    private static void write(File file, String content) throws IOException {
+    private static void write(File file, String content) throws Exception {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(file))) {
             writer.write(content);
-        }
-    }
-
-    private static void closeQuietly(BufferedWriter writer) {
-        if (writer == null) {
-            return;
-        }
-        try {
-            writer.flush();
-            writer.close();
-        } catch (IOException ignored) {
-            // Nothing useful to do at this point.
         }
     }
 
@@ -1051,37 +625,11 @@ public class MainActivity extends Activity {
         file.delete();
     }
 
-    private void startBackgroundThread() {
-        backgroundThread = new HandlerThread("GaussCaptureCamera");
-        backgroundThread.start();
-        backgroundHandler = new Handler(backgroundThread.getLooper());
-        backgroundExecutor = new Executor() {
-            @Override
-            public void execute(Runnable command) {
-                backgroundHandler.post(command);
-            }
-        };
-    }
-
-    private void stopBackgroundThread() {
-        if (backgroundThread == null) {
-            return;
-        }
-        backgroundThread.quitSafely();
-        try {
-            backgroundThread.join();
-        } catch (InterruptedException ignored) {
-            Thread.currentThread().interrupt();
-        }
-        backgroundThread = null;
-        backgroundHandler = null;
-    }
-
     @Override
     public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(code, permissions, results);
         if (code == PERMISSION_REQUEST && previewView.isAvailable()) {
-            openCamera();
+            camera.open(displayRotation());
         }
     }
 }

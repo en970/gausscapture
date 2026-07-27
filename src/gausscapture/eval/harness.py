@@ -115,7 +115,14 @@ def run_one(
         project = store.create(source.stem, target_type=label or "unknown")
         record.project_id = project.id
 
-        if is_video_file(source):
+        if source.is_dir():
+            from gausscapture.pack.archive import import_directory
+
+            result = import_directory(project_path=project.path, source_dir=source)
+            if not result["valid"]:
+                record.error = "; ".join(result["errors"])[:300]
+                return record
+        elif is_video_file(source):
             for name in pack_manifest.REQUIRED_DIRS:
                 (project.capturepack_dir / name).mkdir(parents=True, exist_ok=True)
             video_path = copy_video_into_pack(source, project.path)

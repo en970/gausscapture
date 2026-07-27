@@ -487,11 +487,17 @@ def _cmd_bench(args, progress) -> int:
 
     if args.action == "run":
         target = args.target.expanduser()
-        if target.is_dir():
+        if (target / "manifest.json").exists():
+            sources = [target]  # a single unpacked capture directory
+        elif target.is_dir():
             sources = sorted(
                 p
                 for p in target.iterdir()
-                if p.suffix.lower() in VIDEO_EXTENSIONS or p.suffix.lower() == ".capturepack"
+                # Capture directories written by the native app, alongside plain
+                # videos and packed archives.
+                if (p.is_dir() and (p / "manifest.json").exists())
+                or p.suffix.lower() in VIDEO_EXTENSIONS
+                or p.suffix.lower() == ".capturepack"
             )
         else:
             sources = [target]

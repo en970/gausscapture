@@ -2,96 +2,166 @@
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000">
+    android:background="#0F172A">
 
     <TextureView
         android:id="@+id/preview"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Status, kept small and out of the way: it is reference information,
-         not something to read while filming. -->
-    <TextView
-        android:id="@+id/status"
-        android:layout_width="wrap_content"
+    <!-- What to shoot, in plain language. The operator is holding a phone at
+         arm's length and walking; this has to be readable at a glance, so it
+         gets the top of the screen and real type sizes. -->
+    <LinearLayout
+        android:id="@+id/brief"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_alignParentTop="true"
-        android:layout_alignParentStart="true"
-        android:layout_margin="14dp"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp"
-        android:background="@drawable/panel"
-        android:textColor="#a5a2b0"
-        android:textSize="11sp"
-        android:fontFamily="monospace"
-        android:lineSpacingExtra="2dp"
-        android:text="starting" />
-
-    <!-- Timer is what you actually glance at mid-take, so it is large and
-         centred where the eye already is. -->
-    <TextView
-        android:id="@+id/timer"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_alignParentTop="true"
-        android:layout_centerHorizontal="true"
-        android:layout_margin="14dp"
+        android:orientation="vertical"
+        android:background="#B00F172A"
         android:paddingStart="20dp"
         android:paddingEnd="20dp"
-        android:paddingTop="6dp"
-        android:paddingBottom="6dp"
-        android:background="@drawable/panel"
-        android:textColor="#ffffff"
-        android:textSize="26sp"
-        android:fontFamily="monospace"
-        android:text="00:00" />
+        android:paddingTop="14dp"
+        android:paddingBottom="14dp">
 
-    <!-- The record control sits under the right thumb when the phone is held
-         in landscape, which is how it is held while walking an orbit. -->
-    <Button
-        android:id="@+id/record"
-        android:layout_width="86dp"
-        android:layout_height="86dp"
-        android:layout_alignParentEnd="true"
-        android:layout_centerVertical="true"
-        android:layout_marginEnd="22dp"
-        android:background="@drawable/btn_record"
-        android:text=""
-        android:contentDescription="Record" />
-
-    <!-- Capture-protocol presets. Typing a filename one-handed while holding a
-         phone at arm's length is the kind of friction that produces
-         mislabelled data, so the takes we actually want are one tap each. -->
-    <HorizontalScrollView
-        android:id="@+id/presetScroll"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_alignParentBottom="true"
-        android:layout_alignParentStart="true"
-        android:layout_toStartOf="@id/record"
-        android:layout_margin="14dp"
-        android:scrollbars="none"
-        android:fillViewport="false">
-
-        <LinearLayout
-            android:id="@+id/presets"
+        <TextView
+            android:id="@+id/presetName"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal" />
-    </HorizontalScrollView>
+            android:textColor="#F8FAFC"
+            android:textSize="19sp"
+            android:textStyle="bold"
+            android:text="A · Good capture" />
 
+        <TextView
+            android:id="@+id/presetHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:textColor="#94A3B8"
+            android:textSize="14sp"
+            android:lineSpacingExtra="2dp"
+            android:text="Walk a slow full circle around the subject." />
+    </LinearLayout>
+
+    <!-- Live capture guidance. Hidden until it has something to say: a warning
+         that is always on screen is not a warning. -->
     <TextView
-        android:id="@+id/hint"
+        android:id="@+id/coach"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_above="@id/presetScroll"
+        android:layout_centerHorizontal="true"
+        android:layout_above="@+id/hud"
+        android:layout_marginBottom="16dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        android:background="@drawable/coach_warn"
+        android:textColor="#0F172A"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:visibility="invisible"
+        android:text="Slow down" />
+
+    <!-- Elapsed against the take's target length, so the operator knows when
+         they are done without counting in their head. -->
+    <LinearLayout
+        android:id="@+id/hud"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_above="@+id/bottomBar"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="12dp"
+        android:visibility="invisible">
+
+        <TextView
+            android:id="@+id/timer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:textColor="#F8FAFC"
+            android:textSize="15sp"
+            android:fontFamily="monospace"
+            android:shadowColor="#000000"
+            android:shadowRadius="8"
+            android:text="0:00 / 1:00" />
+
+        <ProgressBar
+            android:id="@+id/progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="6dp"
+            android:layout_marginTop="8dp"
+            android:max="1000"
+            android:progress="0"
+            android:progressDrawable="@drawable/progress_track" />
+    </LinearLayout>
+
+    <RelativeLayout
+        android:id="@+id/bottomBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignParentBottom="true"
+        android:background="#C00F172A"
+        android:paddingTop="14dp"
+        android:paddingBottom="18dp">
+
+        <!-- 48dp targets with generous spacing: the touch-target minimum is
+             44dp and this is used one-handed, in motion. -->
+        <Button
+            android:id="@+id/takesButton"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:minWidth="88dp"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true"
+            android:layout_marginStart="18dp"
+            android:background="@drawable/pill"
+            android:textColor="#E2E8F0"
+            android:textSize="14sp"
+            android:textAllCaps="false"
+            android:text="Takes" />
+
+        <Button
+            android:id="@+id/record"
+            android:layout_width="76dp"
+            android:layout_height="76dp"
+            android:layout_centerInParent="true"
+            android:background="@drawable/btn_record"
+            android:text=""
+            android:contentDescription="Start recording" />
+
+        <Button
+            android:id="@+id/presetButton"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:minWidth="88dp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:layout_marginEnd="18dp"
+            android:background="@drawable/pill"
+            android:textColor="#E2E8F0"
+            android:textSize="14sp"
+            android:textAllCaps="false"
+            android:text="Shot: A" />
+    </RelativeLayout>
+
+    <!-- Camera facts, deliberately small and at the edge. Useful when
+         verifying a rig, noise while filming. -->
+    <TextView
+        android:id="@+id/tech"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_above="@id/bottomBar"
         android:layout_alignParentStart="true"
-        android:layout_marginStart="18dp"
-        android:layout_marginBottom="4dp"
-        android:textColor="#d99a6c"
-        android:textSize="13sp"
+        android:layout_marginStart="20dp"
+        android:layout_marginBottom="6dp"
+        android:textColor="#64748B"
+        android:textSize="10sp"
+        android:fontFamily="monospace"
         android:shadowColor="#000000"
         android:shadowRadius="6"
         android:text="" />
