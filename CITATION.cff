@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+title: "GaussCapture: local-first phone capture for 3D Gaussian splatting, with capture-time quality prediction"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: "Öz"
+    given-names: "Enes"
+    email: "enesozile@gmail.com"
+    alias: "en970"
+repository-code: "https://github.com/en970/gausscapture"
+url: "https://en970.github.io/gausscapture/"
+abstract: >-
+  GaussCapture converts phone video into a 3D Gaussian Splatting preparation
+  workflow that runs entirely on localhost, and is being extended into a
+  research programme asking whether capture-time telemetry measurable on
+  device predicts downstream reconstruction quality. The pipeline uses a
+  fully permissively licensed component stack so that its outputs are
+  unencumbered for commercial use.
+keywords:
+  - gaussian-splatting
+  - 3d-reconstruction
+  - novel-view-synthesis
+  - capture-quality
+  - photogrammetry
+  - computer-vision
+license: MIT
+version: "0.1.0"
+date-released: "2026-07-26"
