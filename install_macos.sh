@@ -1,24 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
+
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [ -z "$PYTHON_BIN" ]; then
-  if command -v python3.11 >/dev/null 2>&1; then
-    PYTHON_BIN=python3.11
-  elif command -v python3.10 >/dev/null 2>&1; then
-    PYTHON_BIN=python3.10
-  else
-    PYTHON_BIN=python3
-    echo "Python 3.10 or 3.11 is recommended. Falling back to $(python3 --version)."
-  fi
+  for candidate in python3.12 python3.11 python3.10 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      PYTHON_BIN="$candidate"
+      break
+    fi
+  done
 fi
+echo "Using $($PYTHON_BIN --version)"
+
 "$PYTHON_BIN" -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+
+# Installs the gausscapture core, its CLI, and the server extra. Editable so
+# that edits to src/ take effect without reinstalling.
+python -m pip install -e ".[server]"
+
 if command -v npm >/dev/null 2>&1; then
   (cd frontend && npm install)
 else
   echo "npm was not found. Install Node.js 18+ to run the React frontend."
 fi
-echo "Install complete. Run ./start_macos.sh"
+
+echo
+echo "Install complete. Check your environment with:"
+echo "  .venv/bin/gausscapture doctor"
+echo "Then start the app with:"
+echo "  ./start_macos.sh"
