@@ -26,6 +26,11 @@ let chunks = [];
 let recordedBlob = null;
 let recordedMime = "";
 let startedAt = 0;
+// Sensor samples must share a clock with the video, and Date.now() is not it:
+// it is wall time and can jump. performance.now() is monotonic, so recording
+// start is stamped on both clocks and every sample is expressed as
+// milliseconds since that instant. Without this the logs are unalignable.
+let recordingPerfStart = 0;
 let timerId = 0;
 let motionLog = [];
 let orientationLog = [];
@@ -116,6 +121,7 @@ els.startRecord.addEventListener("click", () => {
   };
   recorder.start(1000);
   startedAt = Date.now();
+  recordingPerfStart = performance.now();
   timerId = window.setInterval(updateTimer, 250);
   els.startRecord.disabled = true;
   els.stopRecord.disabled = false;
@@ -174,7 +180,8 @@ els.uploadVideo.addEventListener("click", async () => {
 function onMotion(event) {
   if (!recorder || recorder.state !== "recording") return;
   motionLog.push({
-    t_ms: Math.round(performance.now()),
+    // Milliseconds since recording started, so t=0 is video frame 0.
+    t_ms: Math.round(performance.now() - recordingPerfStart),
     acceleration: event.acceleration,
     accelerationIncludingGravity: event.accelerationIncludingGravity,
     rotationRate: event.rotationRate,
@@ -186,7 +193,7 @@ function onMotion(event) {
 function onOrientation(event) {
   if (!recorder || recorder.state !== "recording") return;
   orientationLog.push({
-    t_ms: Math.round(performance.now()),
+    t_ms: Math.round(performance.now() - recordingPerfStart),
     alpha: event.alpha,
     beta: event.beta,
     gamma: event.gamma,
@@ -256,7 +263,18 @@ async function buildCapturePack() {
     camera_settings: cameraSettings,
     note: "Browser APIs do not expose calibrated intrinsics in this minimal app."
   };
-  const imu = { source: "DeviceMotionEvent", samples: motionLog, orientation_samples: orientationLog };
+  const imu = {
+    source: "DeviceMotionEvent",
+    // Declared explicitly so a consumer never has to guess which clock these
+    // timestamps came from.
+    time_base: "milliseconds_since_recording_start",
+    recording_started_at: new Date(startedAt).toISOString(),
+    sample_rate_note:
+      "DeviceMotionEvent fires at 10-60 Hz depending on browser and device, and iOS requires " +
+      "an explicit permission grant. Treat the rate as variable and read event.interval.",
+    samples: motionLog,
+    orientation_samples: orientationLog
+  };
   const warnings = {
     warnings: [
       "Browser capture does not provide calibrated camera intrinsics.",
@@ -264,19 +282,69 @@ async function buildCapturePack() {
       "COLMAP will be required for reconstruction unless pose metadata is added later."
     ]
   };
-  const files = [
+  const payload = [
     ["manifest.json", jsonBlob(manifest)],
     [videoName, recordedBlob],
     ["camera/intrinsics.json", jsonBlob(intrinsics)],
     ["motion/imu_gyro.json", jsonBlob(imu)],
     ["quality/capture_warnings.json", jsonBlob(warnings)]
   ];
+
   const checksumEntries = {};
-  for (const [name, blob] of files) {
+  for (const [name, blob] of payload) {
     checksumEntries[name] = await sha256(blob);
   }
-  files.push(["checksums/sha256.json", jsonBlob(checksumEntries)]);
-  return new Blob([await zipStore(files)], { type: "application/zip" });
+  payload.push(["checksums/sha256.json", jsonBlob(checksumEntries)]);
+
+  return new Blob([await zipStore(await buildBag(payload))], { type: "application/zip" });
+}
+
+// Wraps the payload as a BagIt bag (RFC 8493) so a pack written on a phone is
+// verifiable by bagit-python, an institutional repository, or Zenodo -- none
+// of which will ever learn a bespoke zip dialect. See docs/CAPTUREPACK_SPEC.md.
+async function buildBag(payload) {
+  const entries = [];
+  const manifestLines = [];
+  let octets = 0;
+
+  for (const [name, blob] of payload) {
+    const path = `data/${name}`;
+    entries.push([path, blob]);
+    manifestLines.push(`${await sha256(blob)}  ${path}`);
+    octets += blob.size;
+  }
+
+  const bagit = new Blob(["BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n"], {
+    type: "text/plain"
+  });
+  const bagInfo = new Blob(
+    [
+      [
+        "Bag-Software-Agent: GaussCapture mobile PWA (https://github.com/en970/gausscapture)",
+        `Bagging-Date: ${new Date().toISOString().slice(0, 10)}`,
+        // Payload-Oxum is BagIt's cheap integrity check: total octets and file
+        // count, verifiable without hashing anything.
+        `Payload-Oxum: ${octets}.${payload.length}`,
+        `Internal-Sender-Identifier: ${els.sessionName.value || "Phone Capture"}`,
+        "Internal-Sender-Description: GaussCapture CapturePack captured in a browser"
+      ].join("\n") + "\n"
+    ],
+    { type: "text/plain" }
+  );
+  const payloadManifest = new Blob([manifestLines.join("\n") + "\n"], { type: "text/plain" });
+
+  const tagFiles = [
+    ["bagit.txt", bagit],
+    ["bag-info.txt", bagInfo],
+    ["manifest-sha256.txt", payloadManifest]
+  ];
+  const tagLines = [];
+  for (const [name, blob] of tagFiles) {
+    tagLines.push(`${await sha256(blob)}  ${name}`);
+  }
+  tagFiles.push(["tagmanifest-sha256.txt", new Blob([tagLines.join("\n") + "\n"])]);
+
+  return [...tagFiles, ...entries];
 }
 
 function jsonBlob(value) {

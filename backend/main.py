@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -10,12 +8,13 @@ from backend.api.routes_capturepack import router as capturepack_router
 from backend.api.routes_export import router as export_router
 from backend.api.routes_jobs import router as jobs_router
 from backend.api.routes_preprocess import router as preprocess_router
-from backend.api.routes_preview import files_router, router as preview_router
-from backend.api.routes_projects import router as projects_router, settings_router
+from backend.api.routes_preview import files_router
+from backend.api.routes_preview import router as preview_router
+from backend.api.routes_projects import router as projects_router
+from backend.api.routes_projects import settings_router
 from backend.api.routes_quality import router as quality_router
 from backend.api.routes_training import router as training_router
 from backend.config import ROOT_DIR
-
 
 app = FastAPI(title="GaussCapture MVP", version="0.1.0")
 
