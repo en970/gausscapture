@@ -3,7 +3,7 @@
 Six months, twelve two-week sprints, calibrated to one MacBook Air M2 and a $0–35/month compute budget.
 Derived from [RESEARCH.md](RESEARCH.md). Every sprint has a go/no-go criterion — a sprint that misses it changes the plan rather than sliding.
 
-**Status:** S1 in progress. Last updated 2026-07-26.
+**Status:** S1–S3 complete, S4 next. Last updated 2026-07-27.
 
 ---
 
@@ -30,10 +30,10 @@ Public repository, MIT with REUSE-compliant SPDX headers, `CITATION.cff`, DCO, Z
 
 **Go/no-go:** `pip install gausscapture && gausscapture --help` works on macOS, Linux, and Windows; CI completes in under 10 minutes.
 
-### S3 · `.capturepack` v0.1 as a profile
-BagIt layout, `manifest-sha256.txt`, an unmodified nerfstudio-valid `transforms.json` inside, published JSON Schema. Fix the PWA timestamp epoch bug so IMU aligns to frames.
+### S3 · `.capturepack` as a profile — **done**
+BagIt layout with `manifest-sha256.txt` and `tagmanifest-sha256.txt`, a nerfstudio-convention `transforms.json`, a published JSON Schema, and a COLMAP model reader covering both the text and binary dialects. PWA timestamp epoch bug fixed; the PWA now writes bags too.
 
-**Go/no-go:** unzipping any pack trains directly in gsplat with zero conversion.
+**Go/no-go — met.** `pack export --with-dataset` produces `data/images/`, `data/sparse/0/` and `data/transforms.json`; a trainer pointed at `data/` needs no conversion. Interop is asserted in CI against `bagit-python`, the reference implementation, which knows nothing about this project.
 
 ---
 

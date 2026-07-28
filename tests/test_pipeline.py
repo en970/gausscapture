@@ -44,6 +44,26 @@ class TestProjectStore:
         with pytest.raises(FileNotFoundError):
             store.get("nope")
 
+    def test_project_paths_are_absolute(self, tmp_path, monkeypatch):
+        """Relative project paths break every subprocess in the pipeline.
+
+        COLMAP, ffmpeg and any trainer run with their own working directory, so
+        a relative path resolves against the wrong root and the tool reports a
+        missing file that plainly exists. Regression test for a benchmark run
+        launched with a relative --out.
+        """
+        from gausscapture.project import ProjectStore
+
+        monkeypatch.chdir(tmp_path)
+        store = ProjectStore("runs/benchmark/projects")
+        project = store.create("relative")
+
+        assert store.projects_dir.is_absolute()
+        assert project.path.is_absolute()
+        assert store.get(project.id).path.is_absolute()
+        assert project.colmap_dir.is_absolute()
+        assert project.frames_dir.is_absolute()
+
 
 class TestPack:
     def test_minimal_pack_is_valid_with_warnings(self, project_with_video):
@@ -88,6 +108,65 @@ class TestPack:
         junk.write_text("definitely not a zip", encoding="utf-8")
         with pytest.raises(CaptureFormatError):
             archive.import_archive(project_with_video.path, junk)
+
+
+class TestVideoProbe:
+    """A portrait phone recording stores a landscape frame plus a rotation flag.
+
+    OpenCV applies that flag, so probe metadata must describe the decoded frame
+    rather than the coded one -- otherwise every consumer sees dimensions
+    transposed relative to what it actually reads, and camera intrinsics
+    matched against them are silently wrong.
+    """
+
+    def _rotated(self, source: Path, degrees: int, out: Path) -> Path:
+        import shutil
+        import subprocess
+
+        if not shutil.which("ffmpeg"):
+            pytest.skip("ffmpeg not installed")
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-display_rotation", str(degrees),
+             "-i", str(source), "-c", "copy", str(out)],
+            check=True,
+        )
+        return out
+
+    def test_unrotated_dimensions(self, tmp_path):
+        from gausscapture.ingest.video import probe_video
+
+        source = make_video(tmp_path / "plain.mp4", frames=10, size=(160, 120))
+        info = probe_video(source)
+        assert (info.width, info.height) == (160, 120)
+        assert info.rotation == 0
+
+    def test_quarter_turn_transposes_reported_dimensions(self, tmp_path):
+        import cv2
+
+        from gausscapture.ingest.video import probe_video
+
+        source = make_video(tmp_path / "plain.mp4", frames=10, size=(160, 120))
+        rotated = self._rotated(source, 90, tmp_path / "rot90.mp4")
+
+        info = probe_video(rotated)
+        assert info.rotation == 90
+        assert (info.width, info.height) == (120, 160)
+
+        # The contract that matters: probe agrees with what a decoder returns.
+        capture = cv2.VideoCapture(str(rotated))
+        ok, frame = capture.read()
+        capture.release()
+        assert ok
+        assert (frame.shape[1], frame.shape[0]) == (info.width, info.height)
+
+    def test_half_turn_leaves_dimensions_alone(self, tmp_path):
+        from gausscapture.ingest.video import probe_video
+
+        source = make_video(tmp_path / "plain.mp4", frames=10, size=(160, 120))
+        rotated = self._rotated(source, 180, tmp_path / "rot180.mp4")
+        info = probe_video(rotated)
+        assert info.rotation == 180
+        assert (info.width, info.height) == (160, 120)
 
 
 class TestTelemetry:
@@ -165,6 +244,54 @@ class TestFrameExtraction:
             project_with_video.path, {"target_fps": "all", "max_frames": 3, "blur_filter": False}
         )
         assert index.frames_used <= 3
+
+    def test_moving_camera_is_not_mistaken_for_duplicates(self, project_with_video):
+        """Histograms are invariant to spatial rearrangement.
+
+        The fixture video slides a window across a fixed texture: every frame
+        moves everywhere, yet the grayscale histogram barely changes. Judged on
+        histogram correlation alone the filter discarded most of these frames
+        -- which is exactly the parallax a reconstruction needs. Regression
+        test for the pixel-difference gate.
+        """
+        index = extract_frames(
+            project_with_video.path,
+            {"target_fps": "all", "blur_filter": False, "max_frames": 0},
+        )
+        assert index.frames_skipped_duplicate == 0
+        assert index.frames_used == index.frames_total_sampled
+
+    def test_a_genuinely_static_video_is_deduplicated(self, store, tmp_path):
+        """The inverse case: identical frames must still be caught."""
+        import cv2
+        import numpy as np
+
+        from gausscapture.ingest.video import copy_video_into_pack, probe_video
+
+        source = tmp_path / "static.mp4"
+        writer = cv2.VideoWriter(
+            str(source), cv2.VideoWriter_fourcc(*"mp4v"), 10, (160, 120)
+        )
+        frame = np.random.default_rng(5).integers(0, 255, (120, 160, 3), dtype=np.uint8)
+        for _ in range(30):
+            writer.write(frame)
+        writer.release()
+
+        project = store.create("static")
+        for name in manifest.REQUIRED_DIRS:
+            (project.capturepack_dir / name).mkdir(parents=True, exist_ok=True)
+        video = copy_video_into_pack(source, project.path)
+        manifest.write_manifest(
+            project.capturepack_dir,
+            manifest.create_minimal_manifest(f"video/{video.name}", probe_video(video), "static"),
+        )
+        index = extract_frames(
+            project.path, {"target_fps": "all", "blur_filter": False, "max_frames": 0}
+        )
+        assert index.frames_skipped_duplicate > 0
+        # Lossy H.264-ish encoding adds noise, so a few frames may squeak past
+        # the pixel gate; what matters is that the bulk are caught.
+        assert index.frames_used < index.frames_total_sampled / 2
 
 
 class TestDataset:

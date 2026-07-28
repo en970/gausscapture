@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/en970/gausscapture/main/src/gausscapture/schemas/capturepack.schema.json",
+  "title": "CapturePack manifest",
+  "description": "Manifest for a GaussCapture CapturePack. The pack is distributed as a BagIt bag (RFC 8493) whose payload contains this file at its root. Optional sensor metadata is genuinely optional: a pack created from a bare phone video has none of it, which is precisely why such a capture needs structure-from-motion downstream.",
+  "type": "object",
+  "required": ["capturepack_version", "session_id", "created_at", "video"],
+  "additionalProperties": true,
+  "properties": {
+    "capturepack_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "description": "Format version. Breaking changes bump the minor while the project is pre-1.0."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Stable identifier for this capture session, used as the bag's External-Identifier."
+    },
+    "session_name": { "type": "string" },
+    "capture_type": {
+      "type": "string",
+      "enum": ["static_scene", "dynamic_subject", "unknown"],
+      "description": "static_scene means the subject is still and the camera moves. dynamic_subject is reserved for the stationary-camera case, which is future work."
+    },
+    "target_type": {
+      "type": "string",
+      "description": "Free-form subject hint, for example object, room, outdoor."
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "device": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "manufacturer": { "type": "string" },
+        "model": { "type": "string" },
+        "os": { "type": "string" },
+        "app_version": { "type": "string" }
+      }
+    },
+    "video": {
+      "type": "object",
+      "required": ["main_file"],
+      "additionalProperties": true,
+      "properties": {
+        "main_file": {
+          "type": "string",
+          "description": "Path to the primary video, relative to the payload root.",
+          "pattern": "^[^/].*"
+        },
+        "duration_sec": { "type": ["number", "null"], "minimum": 0 },
+        "width": { "type": ["integer", "null"], "minimum": 1 },
+        "height": { "type": ["integer", "null"], "minimum": 1 },
+        "fps": { "type": ["number", "null"], "minimum": 0 },
+        "codec": { "type": "string" },
+        "bitrate": { "type": ["integer", "null"], "minimum": 0 },
+        "has_audio": { "type": "boolean" }
+      }
+    },
+    "capture_settings": {
+      "type": "object",
+      "description": "Whether the operator locked the controls that, left automatic, drift across a capture and break the brightness-constancy assumption reconstruction relies on.",
+      "additionalProperties": true,
+      "properties": {
+        "exposure_locked": { "type": ["boolean", "null"] },
+        "white_balance_locked": { "type": ["boolean", "null"] },
+        "focus_locked": { "type": ["boolean", "null"] },
+        "stabilisation_disabled": {
+          "type": ["boolean", "null"],
+          "description": "Optical or digital stabilisation warps the image per frame and invalidates a single shared intrinsic model. It should be off."
+        },
+        "storage_mode": { "type": "string" }
+      }
+    },
+    "metadata_files": {
+      "type": "object",
+      "description": "Paths to optional sensor sidecars, relative to the payload root. Null means the capture device could not provide it.",
+      "additionalProperties": true,
+      "properties": {
+        "intrinsics": { "type": ["string", "null"] },
+        "poses": {
+          "type": ["string", "null"],
+          "description": "ARKit or ARCore camera poses. When present, structure-from-motion can be seeded rather than solved cold."
+        },
+        "imu": { "type": ["string", "null"] },
+        "light": { "type": ["string", "null"] },
+        "audio": { "type": ["string", "null"] }
+      }
+    },
+    "time_base": {
+      "type": "string",
+      "description": "How sensor sidecar timestamps relate to the video. Sidecars written by GaussCapture use milliseconds_since_recording_start; anything else must say so, because unanchored timestamps cannot be aligned to frames.",
+      "examples": ["milliseconds_since_recording_start"]
+    }
+  }
+}

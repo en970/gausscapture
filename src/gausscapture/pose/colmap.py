@@ -80,6 +80,9 @@ def run_colmap(
             "`colmap_path` in settings."
         )
 
+    # Absolute from here down. COLMAP runs as a subprocess with its own working
+    # directory, so every path it is given must stand on its own.
+    project_path = Path(project_path).resolve()
     images = project_path / "frames" / "images"
     if not images.exists() or not any(images.glob("*.jpg")):
         raise PipelineStateError("No extracted frames found. Run frame extraction first.")
@@ -128,7 +131,20 @@ def run_colmap(
 
     for i, (label, cmd) in enumerate(steps):
         progress.update(5 + i * 30, label)
-        _run(cmd, cwd=project_path, progress=progress)
+        try:
+            _run(cmd, cwd=project_path, progress=progress)
+        except RuntimeError:
+            # The mapper exits non-zero when it cannot initialise a
+            # reconstruction -- one image, no parallax, no matches. For this
+            # project that is a *measured outcome*, not an environment error:
+            # "SfM could not produce a model from this capture" is precisely
+            # the endpoint the study predicts. Feature extraction or matching
+            # failing, by contrast, means something is wrong with the install
+            # or the images, so those still raise.
+            if cmd[1] == "mapper":
+                progress.log("COLMAP mapper could not initialise a reconstruction")
+                return _build_report(sparse_dir, images, matcher)
+            raise
 
     return _build_report(sparse_dir, images, matcher)
 
@@ -148,11 +164,17 @@ def _build_report(sparse_dir: Path, images: Path, matcher: str) -> PoseReport:
             ],
         )
 
-    # COLMAP can split a capture into several disconnected models; the first is
-    # the largest and the one a trainer should use.
-    model_dir = model_dirs[0]
-    registered = _count_registered(model_dir)
-    points = _count_points(model_dir)
+    # COLMAP splits a capture it cannot connect into several models, numbered
+    # in the order they were reconstructed -- NOT by size. Taking sparse/0
+    # therefore reports whichever fragment happened to be built first, which on
+    # a real capture meant announcing a 3-image fragment as the result while a
+    # usable 63-image reconstruction sat in sparse/1. Pick the largest.
+    #
+    # Counting goes through the shared model reader because the mapper writes
+    # *binary* models by default, and a text-only count silently reports a
+    # successful reconstruction as zero registered images.
+    measured = [(*_count_model(d), d) for d in model_dirs]
+    registered, points, model_dir = max(measured, key=lambda item: item[0])
     ratio = registered / images_total if images_total else 0.0
 
     if ratio >= GOOD_REGISTRATION_RATIO:
@@ -169,9 +191,11 @@ def _build_report(sparse_dir: Path, images: Path, matcher: str) -> PoseReport:
             "training quality will suffer."
         )
     if len(model_dirs) > 1:
+        other = sorted((count for count, _, d in measured if d != model_dir), reverse=True)
         warnings.append(
-            f"COLMAP produced {len(model_dirs)} disconnected models. The capture probably "
-            "broke into segments; re-shoot with continuous motion and more overlap."
+            f"COLMAP produced {len(model_dirs)} disconnected models and the largest "
+            f"({registered} images) was kept; the rest hold {other} images. The capture broke "
+            "into segments -- re-shoot with continuous motion and more overlap."
         )
 
     report = PoseReport(
@@ -203,29 +227,13 @@ def _run(cmd: list[str], cwd: Path, progress: Progress) -> None:
         raise RuntimeError(f"COLMAP step failed with exit code {code}: {' '.join(cmd[:2])}")
 
 
-def _count_registered(model_dir: Path) -> int:
-    """Count registered images from a text model.
+def _count_model(model_dir: Path) -> tuple[int, int]:
+    """Registered-image and sparse-point counts, whichever dialect is on disk."""
+    from gausscapture.errors import CaptureFormatError
+    from gausscapture.pose.model import read_model
 
-    ``images.txt`` uses two lines per image; only the first carries the name.
-    Binary models are not parsed here -- COLMAP writes text when asked, and the
-    count is only used for a quality verdict.
-    """
-    text = model_dir / "images.txt"
-    if not text.exists():
-        return 0
-    count = 0
-    for line in text.read_text(encoding="utf-8", errors="ignore").splitlines():
-        if line and not line.startswith("#") and ".jpg" in line.lower():
-            count += 1
-    return count
-
-
-def _count_points(model_dir: Path) -> int:
-    text = model_dir / "points3D.txt"
-    if not text.exists():
-        return 0
-    return sum(
-        1
-        for line in text.read_text(encoding="utf-8", errors="ignore").splitlines()
-        if line and not line.startswith("#")
-    )
+    try:
+        model = read_model(model_dir)
+    except CaptureFormatError:
+        return 0, 0
+    return len(model.images), model.points

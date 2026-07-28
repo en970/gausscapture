@@ -75,8 +75,34 @@ def build_dataset(
     if copied == 0:
         raise PipelineStateError(f"COLMAP model at {sparse_src} contains no cameras/images/points3D")
 
+    # A transforms.json alongside the COLMAP model widens what can read this
+    # directory: gsplat's examples take the COLMAP layout, while nerfstudio,
+    # Brush and most research code take transforms.json. Writing both costs a
+    # few kilobytes and removes a conversion step either way.
+    _write_transforms(sparse_dst, dataset_dir, {frame.name for frame in frames}, progress)
+
     progress.update(100, f"Dataset ready at {dataset_dir}")
     return dataset_dir
+
+
+def _write_transforms(
+    model_dir: Path, dataset_dir: Path, image_names: set[str], progress: Progress
+) -> None:
+    """Emit transforms.json, treating failure as non-fatal.
+
+    The COLMAP layout is the primary contract; transforms.json is a
+    convenience. An unreadable model should surface when a trainer reads it,
+    not by aborting dataset assembly.
+    """
+    from gausscapture.errors import GaussCaptureError
+    from gausscapture.pack.transforms import write_transforms
+
+    try:
+        write_transforms(
+            model_dir, dataset_dir / "transforms.json", applies_to=image_names
+        )
+    except (GaussCaptureError, OSError, ValueError) as exc:
+        progress.log(f"Could not write transforms.json: {exc}")
 
 
 def _find_sparse_model(project_path: Path) -> Path | None:
@@ -86,14 +112,29 @@ def _find_sparse_model(project_path: Path) -> Path | None:
         return None
     if any((sparse_root / f"{s}.bin").exists() or (sparse_root / f"{s}.txt").exists() for s in SPARSE_FILES):
         return sparse_root
-    subdirs = sorted(p for p in sparse_root.iterdir() if p.is_dir())
-    for candidate in subdirs:
-        if any(
-            (candidate / f"{s}.bin").exists() or (candidate / f"{s}.txt").exists()
-            for s in SPARSE_FILES
-        ):
-            return candidate
-    return None
+    candidates = [
+        p
+        for p in sorted(sparse_root.iterdir())
+        if p.is_dir()
+        and any((p / f"{s}.bin").exists() or (p / f"{s}.txt").exists() for s in SPARSE_FILES)
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # COLMAP numbers disconnected models in reconstruction order, not by size,
+    # so sparse/0 is frequently a small fragment. Train on the largest.
+    from gausscapture.errors import CaptureFormatError
+    from gausscapture.pose.model import read_model
+
+    def registered(path: Path) -> int:
+        try:
+            return len(read_model(path).images)
+        except CaptureFormatError:
+            return 0
+
+    return max(candidates, key=registered)
 
 
 def _place(src: Path, dst: Path, link: bool) -> None:

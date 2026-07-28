@@ -91,6 +91,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=["validate", "export"])
     p.add_argument("target", help="Project id, project path, or a pack directory")
     p.add_argument("--verify", action="store_true", help="Re-hash files against the checksums")
+    p.add_argument("--out", type=Path, help="Destination archive path (export)")
+    p.add_argument(
+        "--with-dataset",
+        action="store_true",
+        help="Include images, the COLMAP model and transforms.json, making the archive trainable",
+    )
     p.add_argument("--json", action="store_true")
 
     # telemetry --------------------------------------------------------------
@@ -138,6 +144,28 @@ def _build_parser() -> argparse.ArgumentParser:
     p = add("export", "Build an export bundle from the trained model.", _cmd_export)
     p.add_argument("project")
     p.add_argument("--type", default="web", choices=["raw", "web", "blender", "unity", "proxy_mesh"])
+    p.add_argument("--json", action="store_true")
+
+    # bench ------------------------------------------------------------------
+    p = add("bench", "Batch-evaluate captures and analyse the results.", _cmd_bench)
+    p.add_argument("action", choices=["run", "analyze", "analyse"])
+    p.add_argument(
+        "target",
+        type=Path,
+        help="Directory of videos/packs (run), or a results.jsonl (analyze)",
+    )
+    p.add_argument("--out", type=Path, help="Output directory for a run")
+    p.add_argument("--preset", default="balanced", choices=["fast", "balanced", "dense"])
+    p.add_argument("--matcher", default="sequential", choices=["sequential", "exhaustive"])
+    p.add_argument("--skip-pose", action="store_true", help="Telemetry and frames only")
+    p.add_argument(
+        "--outcome",
+        default="registered_ratio",
+        help="Column to correlate signals against (analyze)",
+    )
+    p.add_argument(
+        "--permutations", type=int, default=10_000, help="Permutation count for p-values"
+    )
     p.add_argument("--json", action="store_true")
 
     # run --------------------------------------------------------------------
@@ -301,7 +329,7 @@ def _cmd_import(args, progress) -> int:
 
 
 def _cmd_pack(args, progress) -> int:
-    from gausscapture.pack import archive, manifest
+    from gausscapture.pack import archive, manifest, transforms
 
     candidate = Path(args.target).expanduser()
     if (candidate / "manifest.json").exists():
@@ -312,12 +340,27 @@ def _cmd_pack(args, progress) -> int:
         pack_dir = project_path / "capturepack"
 
     if args.action == "export":
-        out = archive.export_archive(project_path)
-        return _emit({"archive": str(out)}, args.json, str(out))
+        out = archive.export_archive(
+            project_path,
+            out_path=args.out,
+            include_dataset=args.with_dataset,
+            progress=progress,
+        )
+        size_mb = out.stat().st_size / 1e6
+        return _emit(
+            {"archive": str(out), "size_bytes": out.stat().st_size, "bagit": True},
+            args.json,
+            f"{out}  ({size_mb:.1f} MB, BagIt)",
+        )
 
     result = manifest.validate(pack_dir)
     if args.verify:
         result["checksums"] = archive.verify_checksums(pack_dir)
+
+    transforms_path = pack_dir / "transforms.json"
+    if transforms_path.exists():
+        result["transforms"] = transforms.validate_transforms(transforms_path, pack_dir)
+
     if args.json:
         result.pop("manifest", None)
         return _emit(result, True)
@@ -329,7 +372,12 @@ def _cmd_pack(args, progress) -> int:
         print(f"  warning: {warning}")
     if args.verify:
         checks = result["checksums"]
-        print(f"  checksums: {'ok' if checks['verified'] else 'MISMATCH'} ({checks.get('checked', 0)} files)")
+        state = "ok" if checks["verified"] else "MISMATCH"
+        print(f"  checksums: {state} ({checks.get('checked', 0)} files)")
+    if "transforms" in result:
+        t = result["transforms"]
+        state = "ok" if t["valid"] else "INVALID"
+        print(f"  transforms.json: {state} ({t['frames']} poses, {t.get('camera_model')})")
     return 0 if result["valid"] else 1
 
 
@@ -430,6 +478,75 @@ def _cmd_export(args, progress) -> int:
     result = create_export(project_path, args.type)
     human = f"{result['path']}  ({result['size_bytes'] / 1e6:.1f} MB)"
     return _emit(result, args.json, human)
+
+
+def _cmd_bench(args, progress) -> int:
+    from gausscapture.eval.analysis import analyse
+    from gausscapture.eval.harness import load_results, run_batch, write_csv
+    from gausscapture.ingest.video import VIDEO_EXTENSIONS
+
+    if args.action == "run":
+        target = args.target.expanduser()
+        if (target / "manifest.json").exists():
+            sources = [target]  # a single unpacked capture directory
+        elif target.is_dir():
+            sources = sorted(
+                p
+                for p in target.iterdir()
+                # Capture directories written by the native app, alongside plain
+                # videos and packed archives.
+                if (p.is_dir() and (p / "manifest.json").exists())
+                or p.suffix.lower() in VIDEO_EXTENSIONS
+                or p.suffix.lower() == ".capturepack"
+            )
+        else:
+            sources = [target]
+        if not sources:
+            raise GaussCaptureError(f"No videos or capture packs found in {target}")
+
+        out_dir = args.out or (Path("benchmarks") / "runs" / target.name)
+        records = run_batch(
+            sources,
+            out_dir,
+            frame_preset=args.preset,
+            matcher=args.matcher,
+            skip_pose=args.skip_pose,
+            progress=progress,
+        )
+        write_csv(records, out_dir / "results.csv")
+
+        summary = {
+            "out_dir": str(out_dir),
+            "captures": len(records),
+            "registered": sum(1 for r in records if r.registered),
+            "errors": sum(1 for r in records if r.error),
+            "results": str(out_dir / "results.jsonl"),
+        }
+        if args.json:
+            return _emit(summary, True)
+
+        print(f"\n{'capture':<22} {'frames':>7} {'reg':>6} {'ratio':>7} {'points':>8}  status")
+        for record in records:
+            print(
+                f"{record.name[:22]:<22} {record.frames_used:>7} "
+                f"{'yes' if record.registered else 'no':>6} "
+                f"{record.registered_ratio:>6.0%} {record.sparse_points:>8}  "
+                f"{record.error or record.pose_status}"
+            )
+        print(f"\nresults: {out_dir}/results.jsonl  (+ .csv)")
+        return 0
+
+    # analyze ---------------------------------------------------------------
+    path = args.target.expanduser()
+    if path.is_dir():
+        path = path / "results.jsonl"
+    report = analyse(
+        load_results(path), outcome=args.outcome, permutations=args.permutations
+    )
+    if args.json:
+        return _emit(report.to_dict(), True)
+    print(report.render())
+    return 0
 
 
 def _cmd_run(args, progress) -> int:

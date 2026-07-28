@@ -54,6 +54,8 @@ def analyze_capture(
     try:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or (manifest.get("video", {}).get("fps") or 0.0)
+        decoded_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        decoded_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         indices = _sample_indices(total_frames, sample_count)
 
         signals: list[FrameSignals] = []
@@ -104,7 +106,18 @@ def analyze_capture(
     if not signals:
         raise CaptureFormatError("No frames could be sampled from the video")
 
-    report = _aggregate(signals, manifest, fps, blur_relative_threshold)
+    # Video facts are measured from the decoder, not taken from the manifest.
+    # A producer may omit a field -- the Android capture app omits duration --
+    # and, more importantly, a portrait recording stores a landscape frame plus
+    # a rotation flag, so the manifest's 1920x1080 describes frames nobody ever
+    # decodes. A claim in metadata is weaker evidence than the file itself.
+    measured = VideoInfo(
+        duration_sec=(total_frames / fps) if (fps and total_frames) else None,
+        width=decoded_width or None,
+        height=decoded_height or None,
+        fps=fps or None,
+    )
+    report = _aggregate(signals, manifest, fps, blur_relative_threshold, measured)
     report.thumbnails = thumbnails
     score_report(report)
 
@@ -121,6 +134,7 @@ def _aggregate(
     manifest: dict,
     fps: float,
     blur_relative_threshold: float,
+    measured: VideoInfo | None = None,
 ) -> TelemetryReport:
     vols = [s.blur_vol for s in signals]
     relatives = [s.blur_relative for s in signals]
@@ -166,10 +180,11 @@ def _aggregate(
         exposure_locked=capture_settings.get("exposure_locked"),
         white_balance_locked=capture_settings.get("white_balance_locked"),
         video=VideoInfo(
-            duration_sec=video_meta.get("duration_sec"),
-            width=video_meta.get("width"),
-            height=video_meta.get("height"),
-            fps=fps or video_meta.get("fps"),
+            duration_sec=(measured.duration_sec if measured else None)
+            or video_meta.get("duration_sec"),
+            width=(measured.width if measured else None) or video_meta.get("width"),
+            height=(measured.height if measured else None) or video_meta.get("height"),
+            fps=(measured.fps if measured else None) or video_meta.get("fps"),
             codec=video_meta.get("codec", "unknown"),
             bitrate=video_meta.get("bitrate"),
             has_audio=bool(video_meta.get("has_audio")),
