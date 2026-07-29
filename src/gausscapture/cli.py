@@ -120,6 +120,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p = add("pose", "Estimate camera poses with COLMAP.", _cmd_pose)
     p.add_argument("project")
     p.add_argument("--matcher", default="sequential", choices=["sequential", "exhaustive", "vocab_tree"])
+    p.add_argument(
+        "--no-seed-intrinsics",
+        action="store_true",
+        help="Make COLMAP solve intrinsics from scratch instead of using the device's",
+    )
+    p.add_argument(
+        "--fix-intrinsics",
+        action="store_true",
+        help="Seed device intrinsics and forbid bundle adjustment from refining them",
+    )
     p.add_argument("--json", action="store_true")
 
     # dataset ----------------------------------------------------------------
@@ -158,6 +168,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--preset", default="balanced", choices=["fast", "balanced", "dense"])
     p.add_argument("--matcher", default="sequential", choices=["sequential", "exhaustive"])
     p.add_argument("--skip-pose", action="store_true", help="Telemetry and frames only")
+    p.add_argument(
+        "--no-seed-intrinsics",
+        action="store_true",
+        help="Make COLMAP solve intrinsics from scratch instead of using the device's",
+    )
+    p.add_argument(
+        "--fix-intrinsics",
+        action="store_true",
+        help="Seed device intrinsics and forbid bundle adjustment from refining them",
+    )
     p.add_argument(
         "--outcome",
         default="registered_ratio",
@@ -429,7 +449,13 @@ def _cmd_pose(args, progress) -> int:
     from gausscapture.project import STATUS_READY, ProjectStore
 
     project_path = _resolve_project(args.project)
-    report = run_colmap(project_path, matcher=args.matcher, progress=progress)
+    report = run_colmap(
+        project_path,
+        matcher=args.matcher,
+        progress=progress,
+        seed_intrinsics=not args.no_seed_intrinsics,
+        refine_intrinsics=not args.fix_intrinsics,
+    )
     ProjectStore().update(project_path.name, status=STATUS_READY, last_step="Poses estimated")
     summary = (
         f"{report.status}: registered {report.images_registered}/{report.images_total} "
@@ -511,6 +537,8 @@ def _cmd_bench(args, progress) -> int:
             frame_preset=args.preset,
             matcher=args.matcher,
             skip_pose=args.skip_pose,
+            seed_intrinsics=not args.no_seed_intrinsics,
+            refine_intrinsics=not args.fix_intrinsics,
             progress=progress,
         )
         write_csv(records, out_dir / "results.csv")

@@ -84,6 +84,12 @@ class CaptureRecord:
     seconds_frames: float = 0.0
     seconds_pose: float = 0.0
 
+    #: Whether device-reported intrinsics were handed to the solver.
+    seeded_intrinsics: bool = False
+    seed_fx: float | None = None
+    #: Focal length the solver settled on, for comparison against the device's.
+    solved_fx: float | None = None
+
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -101,6 +107,8 @@ def run_one(
     frame_preset: str = "balanced",
     matcher: str = "sequential",
     skip_pose: bool = False,
+    seed_intrinsics: bool = True,
+    refine_intrinsics: bool = True,
     progress: Progress | None = None,
 ) -> CaptureRecord:
     """Take one video or pack through telemetry, frames, and pose estimation.
@@ -164,7 +172,13 @@ def run_one(
             return record
 
         started = time.perf_counter()
-        pose = run_colmap(project.path, matcher=matcher, progress=progress)
+        pose = run_colmap(
+            project.path,
+            matcher=matcher,
+            progress=progress,
+            seed_intrinsics=seed_intrinsics,
+            refine_intrinsics=refine_intrinsics,
+        )
         record.seconds_pose = time.perf_counter() - started
         record.pose_status = pose.status
         record.registered_ratio = pose.registered_ratio
@@ -173,6 +187,10 @@ def run_one(
         # "Registered" means a reconstruction a trainer could actually use, not
         # merely that COLMAP produced some output.
         record.registered = pose.status in {"good", "warning"}
+        record.seeded_intrinsics = pose.seeded_intrinsics is not None
+        if pose.seeded_intrinsics:
+            record.seed_fx = float(pose.seeded_intrinsics["fx"])
+        record.solved_fx = pose.solved_fx
 
     except GaussCaptureError as exc:
         record.error = str(exc)[:300]
@@ -191,6 +209,8 @@ def run_batch(
     frame_preset: str = "balanced",
     matcher: str = "sequential",
     skip_pose: bool = False,
+    seed_intrinsics: bool = True,
+    refine_intrinsics: bool = True,
     progress: Progress | None = None,
 ) -> list[CaptureRecord]:
     """Run every source and write ``results.jsonl`` plus ``run_config.json``.
@@ -208,6 +228,8 @@ def run_batch(
         "frame_settings": FRAME_PRESETS[frame_preset],
         "matcher": matcher,
         "skip_pose": skip_pose,
+        "seed_intrinsics": seed_intrinsics,
+        "refine_intrinsics": refine_intrinsics,
         "colmap_available": colmap_available(),
         "platform": f"{platform.system()} {platform.machine()}",
         "python": platform.python_version(),
@@ -230,6 +252,8 @@ def run_batch(
             frame_preset=frame_preset,
             matcher=matcher,
             skip_pose=skip_pose,
+            seed_intrinsics=seed_intrinsics,
+            refine_intrinsics=refine_intrinsics,
             progress=progress,
         )
         records.append(record)

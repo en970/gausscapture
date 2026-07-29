@@ -33,16 +33,29 @@ class ColmapBackend:
 
     name = "colmap"
 
-    def __init__(self, settings: Settings | None = None, matcher: str = "sequential"):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        matcher: str = "sequential",
+        seed_intrinsics: bool = True,
+        refine_intrinsics: bool = True,
+    ):
         self.settings = settings or get_settings()
         self.matcher = matcher
+        self.seed_intrinsics = seed_intrinsics
+        self.refine_intrinsics = refine_intrinsics
 
     def available(self) -> bool:
         return colmap_available(self.settings)
 
     def solve(self, project_path: Path, progress: Progress | None = None) -> PoseReport:
         return run_colmap(
-            project_path, matcher=self.matcher, settings=self.settings, progress=progress
+            project_path,
+            matcher=self.matcher,
+            settings=self.settings,
+            progress=progress,
+            seed_intrinsics=self.seed_intrinsics,
+            refine_intrinsics=self.refine_intrinsics,
         )
 
 
@@ -52,6 +65,8 @@ def run_colmap(
     settings: Settings | None = None,
     progress: Progress | None = None,
     camera_model: str = "OPENCV",
+    seed_intrinsics: bool = True,
+    refine_intrinsics: bool = True,
 ) -> PoseReport:
     """Run feature extraction, matching, and mapping.
 
@@ -70,6 +85,15 @@ def run_colmap(
     ``sequential`` matching is the default because frames come from video, where
     temporal neighbours are spatial neighbours; exhaustive matching costs
     quadratic time for no benefit until loop closure matters.
+
+    ``seed_intrinsics`` hands COLMAP the calibration the phone reports, rather
+    than making it solve for focal length and distortion from scratch. The
+    device value is a factory calibration; the solved one is an estimate from
+    whatever parallax the capture happened to contain, so seeding should help
+    most exactly where captures are weakest. ``refine_intrinsics`` still lets
+    bundle adjustment move them, which is the safer default: the device figure
+    is measured for the full sensor and we rescale it through a crop, so it is
+    a strong prior rather than ground truth.
     """
     settings = settings or get_settings()
     progress = progress or NullProgress()
@@ -92,41 +116,54 @@ def run_colmap(
     database = colmap_dir / "database.db"
     sparse_dir.mkdir(parents=True, exist_ok=True)
 
+    intrinsics = None
+    if seed_intrinsics:
+        from gausscapture.pose import intrinsics as intrinsics_module
+
+        intrinsics = intrinsics_module.for_project(project_path)
+
     binary = settings.colmap_path
+    extractor = [
+        binary,
+        "feature_extractor",
+        "--database_path",
+        str(database),
+        "--image_path",
+        str(images),
+        # All frames share one physical camera.
+        "--ImageReader.single_camera",
+        "1",
+        "--ImageReader.camera_model",
+        camera_model,
+    ]
+    if intrinsics is not None:
+        extractor += ["--ImageReader.camera_params", intrinsics.colmap_camera_params()]
+        progress.log(
+            f"Seeding intrinsics from the device: fx={intrinsics.fx:.1f} "
+            f"fy={intrinsics.fy:.1f} cx={intrinsics.cx:.1f} cy={intrinsics.cy:.1f}"
+        )
+
+    mapper = [
+        binary,
+        "mapper",
+        "--database_path",
+        str(database),
+        "--image_path",
+        str(images),
+        "--output_path",
+        str(sparse_dir),
+    ]
+    if intrinsics is not None and not refine_intrinsics:
+        mapper += [
+            "--Mapper.ba_refine_focal_length", "0",
+            "--Mapper.ba_refine_principal_point", "0",
+            "--Mapper.ba_refine_extra_params", "0",
+        ]
+
     steps = [
-        (
-            "Extracting features",
-            [
-                binary,
-                "feature_extractor",
-                "--database_path",
-                str(database),
-                "--image_path",
-                str(images),
-                # All frames share one physical camera.
-                "--ImageReader.single_camera",
-                "1",
-                "--ImageReader.camera_model",
-                camera_model,
-            ],
-        ),
-        (
-            "Matching features",
-            [binary, f"{matcher}_matcher", "--database_path", str(database)],
-        ),
-        (
-            "Mapping sparse reconstruction",
-            [
-                binary,
-                "mapper",
-                "--database_path",
-                str(database),
-                "--image_path",
-                str(images),
-                "--output_path",
-                str(sparse_dir),
-            ],
-        ),
+        ("Extracting features", extractor),
+        ("Matching features", [binary, f"{matcher}_matcher", "--database_path", str(database)]),
+        ("Mapping sparse reconstruction", mapper),
     ]
 
     for i, (label, cmd) in enumerate(steps):
@@ -143,10 +180,13 @@ def run_colmap(
             # or the images, so those still raise.
             if cmd[1] == "mapper":
                 progress.log("COLMAP mapper could not initialise a reconstruction")
-                return _build_report(sparse_dir, images, matcher)
+                return _build_report(sparse_dir, images, matcher)  # noqa: TRY300
             raise
 
-    return _build_report(sparse_dir, images, matcher)
+    report = _build_report(sparse_dir, images, matcher)
+    if intrinsics is not None:
+        report.seeded_intrinsics = intrinsics.to_dict()
+    return report
 
 
 def _build_report(sparse_dir: Path, images: Path, matcher: str) -> PoseReport:
@@ -208,6 +248,7 @@ def _build_report(sparse_dir: Path, images: Path, matcher: str) -> PoseReport:
         model_dir=str(model_dir),
         warnings=warnings,
     )
+    report.solved_fx, report.solved_fy = _solved_focal(model_dir)
     (sparse_dir.parent / "pose_report.json").write_text(
         json.dumps(report.to_dict(), indent=2), encoding="utf-8"
     )
@@ -225,6 +266,21 @@ def _run(cmd: list[str], cwd: Path, progress: Progress) -> None:
     code = process.wait()
     if code != 0:
         raise RuntimeError(f"COLMAP step failed with exit code {code}: {' '.join(cmd[:2])}")
+
+
+def _solved_focal(model_dir: Path) -> tuple[float | None, float | None]:
+    """Focal length the solver settled on, for comparison against the device's."""
+    from gausscapture.errors import CaptureFormatError
+    from gausscapture.pose.model import read_model
+
+    try:
+        model = read_model(model_dir)
+    except CaptureFormatError:
+        return None, None
+    if not model.cameras:
+        return None, None
+    camera = next(iter(model.cameras.values()))
+    return camera.fx, camera.fy
 
 
 def _count_model(model_dir: Path) -> tuple[int, int]:

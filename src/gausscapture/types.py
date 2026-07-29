@@ -154,6 +154,11 @@ class PoseReport:
     sparse_points: int = 0
     status: str = "unknown"
     model_dir: str = ""
+    #: Device-reported intrinsics handed to the solver, when any were used.
+    seeded_intrinsics: dict[str, Any] | None = None
+    #: Focal length the solver settled on, comparable against the device's.
+    solved_fx: float | None = None
+    solved_fy: float | None = None
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
