@@ -72,7 +72,12 @@ jobs:
       - name: Reject non-commercial Gaussian splatting components
         run: |
           set -e
-          FORBIDDEN='diff_gaussian_rasterization|diff-gaussian-rasterization|simple-knn|simple_knn|LICENSE_gaussian_splatting'
+          # File names that appear once a non-commercial rasterizer is vendored,
+          # AND the upstream repository itself. The name check alone missed a
+          # real case: a notebook that cloned the Inria repo at runtime, where
+          # the forbidden files only ever existed on the Colab VM and never in
+          # this tree. Catching the clone is what catches that class.
+          FORBIDDEN='diff_gaussian_rasterization|diff-gaussian-rasterization|simple-knn|simple_knn|LICENSE_gaussian_splatting|graphdeco-inria'
           if grep -rIEl "$FORBIDDEN" \
                --exclude-dir=.git \
                --exclude-dir=node_modules \
