@@ -10,9 +10,11 @@ from gausscapture.export.preview import (
     import_training_result,
     preview_status,
 )
+from gausscapture.export.splat_ply import GaussianSplat, read_splat_ply
 
 __all__ = [
     "EXPORT_TYPES",
+    "GaussianSplat",
     "MODEL_SUFFIXES",
     "build_preview_from_latest_training",
     "create_colab_package",
@@ -21,4 +23,5 @@ __all__ = [
     "import_training_result",
     "list_exports",
     "preview_status",
+    "read_splat_ply",
 ]
