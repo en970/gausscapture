@@ -3,7 +3,7 @@
 Six months, twelve two-week sprints, calibrated to one MacBook Air M2 and a $0–35/month compute budget.
 Derived from [RESEARCH.md](RESEARCH.md). Every sprint has a go/no-go criterion — a sprint that misses it changes the plan rather than sliding.
 
-**Status:** S1–S3 complete, S4 next. Last updated 2026-07-27.
+**Status:** S1–S3 complete; S4 partly done (intrinsic seeding measured and rejected, pose seeding blocked on the capture app). Last updated 2026-07-29.
 
 ---
 
@@ -39,10 +39,21 @@ BagIt layout with `manifest-sha256.txt` and `tagmanifest-sha256.txt`, a nerfstud
 
 ## v1 — Evaluation harness (S4–S5)
 
-### S4 · Pose backends
-`PoseBackend` protocol with COLMAP global mapper (adding the missing `--ImageReader.single_camera`) seeded by ARKit priors; MapAnything-apache as a second backend.
+### S4 · Pose backends — *partly done, one part answered negatively*
+`PoseBackend` protocol with COLMAP (including the missing `--ImageReader.single_camera`) — done.
 
-**Go/no-go:** ARKit seeding cuts COLMAP time by ≥30% across 10 packs with no registration regressions.
+**Intrinsic seeding: measured, and it does not work.** Handing COLMAP the
+phone's own calibration changed no registration ratio across three captures and
+cost 17–61% more time, against a hoped-for 30% saving. Seeded and unseeded runs
+converge to the same focal length from different starting points, so the images
+already determine it. Off by default; see [EXPERIMENTS.md §E3](EXPERIMENTS.md).
+
+**Pose seeding remains open** and is the stronger prior this sprint was really
+about. It is blocked on the capture app recording ARCore poses, which it does
+not yet.
+
+**Go/no-go, revised:** ARCore pose seeding cuts COLMAP time by ≥30% across 10
+packs with no registration regressions.
 
 ### S5 · Static reconstruction, correctly wired
 gsplat MCMC with bilateral grid, replacing the currently broken external-trainer invocation. SPZ and SOG export via splat-transform. Spark viewer replaces the deprecated Three.js splat loaders. Drop `.ksplat`.

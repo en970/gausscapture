@@ -107,7 +107,7 @@ def run_one(
     frame_preset: str = "balanced",
     matcher: str = "sequential",
     skip_pose: bool = False,
-    seed_intrinsics: bool = True,
+    seed_intrinsics: bool = False,
     refine_intrinsics: bool = True,
     progress: Progress | None = None,
 ) -> CaptureRecord:
@@ -209,7 +209,7 @@ def run_batch(
     frame_preset: str = "balanced",
     matcher: str = "sequential",
     skip_pose: bool = False,
-    seed_intrinsics: bool = True,
+    seed_intrinsics: bool = False,
     refine_intrinsics: bool = True,
     progress: Progress | None = None,
 ) -> list[CaptureRecord]:

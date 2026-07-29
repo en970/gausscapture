@@ -37,7 +37,7 @@ class ColmapBackend:
         self,
         settings: Settings | None = None,
         matcher: str = "sequential",
-        seed_intrinsics: bool = True,
+        seed_intrinsics: bool = False,
         refine_intrinsics: bool = True,
     ):
         self.settings = settings or get_settings()
@@ -65,7 +65,7 @@ def run_colmap(
     settings: Settings | None = None,
     progress: Progress | None = None,
     camera_model: str = "OPENCV",
-    seed_intrinsics: bool = True,
+    seed_intrinsics: bool = False,
     refine_intrinsics: bool = True,
 ) -> PoseReport:
     """Run feature extraction, matching, and mapping.
@@ -86,14 +86,20 @@ def run_colmap(
     temporal neighbours are spatial neighbours; exhaustive matching costs
     quadratic time for no benefit until loop closure matters.
 
-    ``seed_intrinsics`` hands COLMAP the calibration the phone reports, rather
-    than making it solve for focal length and distortion from scratch. The
-    device value is a factory calibration; the solved one is an estimate from
-    whatever parallax the capture happened to contain, so seeding should help
-    most exactly where captures are weakest. ``refine_intrinsics`` still lets
-    bundle adjustment move them, which is the safer default: the device figure
-    is measured for the full sensor and we rescale it through a crop, so it is
-    a strong prior rather than ground truth.
+    ``seed_intrinsics`` hands COLMAP the calibration the phone reports instead
+    of making it solve for focal length and distortion from scratch.
+
+    **It is off by default, because measurement said so.** Across three real
+    captures it changed no registration ratio at all (93/36/4 percent either
+    way), moved sparse point counts by under one percent, and cost 17 to 61
+    percent more wall-clock time -- the opposite of the roadmap's hoped-for
+    speed-up. On the one capture that reconstructed well, seeded and unseeded
+    runs converged to the same focal length from different starting points,
+    which says the images already determine it and the prior adds nothing.
+
+    Note this tests *intrinsic* seeding only. Seeding *poses* from ARCore is a
+    far stronger prior and remains untested, because the capture app does not
+    record them yet.
     """
     settings = settings or get_settings()
     progress = progress or NullProgress()

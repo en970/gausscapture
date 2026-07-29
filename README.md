@@ -122,6 +122,7 @@ On Apple Silicon there is no CUDA path. [Brush](https://github.com/ArthurBrussee
 |---|---|
 | [**RESEARCH.md**](docs/RESEARCH.md) | The technical report: competitive landscape, what is licensed, why stationary-phone 4D is physically bounded, the proposed contribution, evaluation protocol |
 | [**ROADMAP.md**](docs/ROADMAP.md) | Twelve sprints with go/no-go criteria, and what is explicitly out of scope |
+| [**EXPERIMENTS.md**](docs/EXPERIMENTS.md) | What was actually run and what it showed, negative results included |
 | [**DEPENDENCIES.md**](docs/DEPENDENCIES.md) | Bundled vs. invoked classification; the repositories that declare permissive licences while shipping encumbered code |
 | [CAPTUREPACK_SPEC.md](docs/CAPTUREPACK_SPEC.md) | Container format (being migrated to a BagIt profile) |
 | [TRAINING_PIPELINE.md](docs/TRAINING_PIPELINE.md) · [EXPORT_FORMATS.md](docs/EXPORT_FORMATS.md) | Pipeline stages and export targets |

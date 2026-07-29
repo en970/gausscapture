@@ -121,9 +121,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("--matcher", default="sequential", choices=["sequential", "exhaustive", "vocab_tree"])
     p.add_argument(
-        "--no-seed-intrinsics",
+        "--seed-intrinsics",
         action="store_true",
-        help="Make COLMAP solve intrinsics from scratch instead of using the device's",
+        help="Hand COLMAP the device's calibration (measured: no benefit, 17-61%% slower)",
     )
     p.add_argument(
         "--fix-intrinsics",
@@ -169,9 +169,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--matcher", default="sequential", choices=["sequential", "exhaustive"])
     p.add_argument("--skip-pose", action="store_true", help="Telemetry and frames only")
     p.add_argument(
-        "--no-seed-intrinsics",
+        "--seed-intrinsics",
         action="store_true",
-        help="Make COLMAP solve intrinsics from scratch instead of using the device's",
+        help="Hand COLMAP the device's calibration (measured: no benefit, 17-61%% slower)",
     )
     p.add_argument(
         "--fix-intrinsics",
@@ -453,7 +453,7 @@ def _cmd_pose(args, progress) -> int:
         project_path,
         matcher=args.matcher,
         progress=progress,
-        seed_intrinsics=not args.no_seed_intrinsics,
+        seed_intrinsics=args.seed_intrinsics,
         refine_intrinsics=not args.fix_intrinsics,
     )
     ProjectStore().update(project_path.name, status=STATUS_READY, last_step="Poses estimated")
@@ -537,7 +537,7 @@ def _cmd_bench(args, progress) -> int:
             frame_preset=args.preset,
             matcher=args.matcher,
             skip_pose=args.skip_pose,
-            seed_intrinsics=not args.no_seed_intrinsics,
+            seed_intrinsics=args.seed_intrinsics,
             refine_intrinsics=not args.fix_intrinsics,
             progress=progress,
         )
