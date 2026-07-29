@@ -146,6 +146,61 @@ def quaternion_to_rotation(qvec: np.ndarray) -> np.ndarray:
     )
 
 
+def read_points(model_dir: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Read the sparse point cloud's positions and colours.
+
+    Separate from :func:`read_model`, which only counts points: pose export
+    never needs the coordinates, and parsing a million tracks to answer "how
+    many" would be waste. Visualisation does need them.
+
+    Returns ``(positions, colors)`` as ``(N, 3)`` float32 and uint8 arrays.
+    """
+    model_dir = Path(model_dir)
+    binary = model_dir / "points3D.bin"
+    text = model_dir / "points3D.txt"
+    if binary.exists():
+        return _read_points_binary(binary)
+    if text.exists():
+        return _read_points_text(text)
+    return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
+
+
+def _read_points_binary(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    positions: list[tuple[float, float, float]] = []
+    colors: list[tuple[int, int, int]] = []
+    with path.open("rb") as handle:
+        (count,) = _read(handle, "<Q")
+        for _ in range(count):
+            _id, x, y, z, r, g, b, _error = _read(handle, "<QdddBBBd")
+            (track_length,) = _read(handle, "<Q")
+            # Each track entry is (image_id, point2D_idx); we need none of them.
+            handle.seek(track_length * struct.calcsize("<ii"), 1)
+            positions.append((x, y, z))
+            colors.append((r, g, b))
+    return (
+        np.asarray(positions, dtype=np.float32).reshape(-1, 3),
+        np.asarray(colors, dtype=np.uint8).reshape(-1, 3),
+    )
+
+
+def _read_points_text(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    positions: list[tuple[float, float, float]] = []
+    colors: list[tuple[int, int, int]] = []
+    for line in _iter_data_lines(path):
+        parts = line.split()
+        if len(parts) < 7:
+            continue
+        try:
+            positions.append((float(parts[1]), float(parts[2]), float(parts[3])))
+            colors.append((int(parts[4]), int(parts[5]), int(parts[6])))
+        except ValueError:
+            continue
+    return (
+        np.asarray(positions, dtype=np.float32).reshape(-1, 3),
+        np.asarray(colors, dtype=np.uint8).reshape(-1, 3),
+    )
+
+
 def read_model(model_dir: Path) -> SparseModel:
     """Read a sparse model, preferring binary and falling back to text."""
     model_dir = Path(model_dir)

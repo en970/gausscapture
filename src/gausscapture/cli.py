@@ -188,6 +188,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--json", action="store_true")
 
+    # report -----------------------------------------------------------------
+    p = add("report", "Build a local, offline report from a benchmark run.", _cmd_report)
+    p.add_argument("run", type=Path, help="A benchmark run directory")
+    p.add_argument("--out", type=Path, help="Where to write it (defaults to <run>/report)")
+    p.add_argument("--serve", action="store_true", help="Serve it and print the URL")
+    p.add_argument("--port", type=int, default=8800)
+    p.add_argument("--json", action="store_true")
+
     # run --------------------------------------------------------------------
     p = add("run", "Run telemetry, frames, pose, and dataset in one pass.", _cmd_run)
     p.add_argument("project")
@@ -574,6 +582,37 @@ def _cmd_bench(args, progress) -> int:
     if args.json:
         return _emit(report.to_dict(), True)
     print(report.render())
+    return 0
+
+
+def _cmd_report(args, progress) -> int:
+    from gausscapture.report import build_report
+
+    run_dir = args.run.expanduser()
+    if not (run_dir / "results.jsonl").exists():
+        raise GaussCaptureError(f"No results.jsonl in {run_dir}; is that a benchmark run?")
+
+    out_dir = args.out or (run_dir / "report")
+    index = build_report(run_dir, out_dir)
+    payload = {"report": str(index), "directory": str(out_dir)}
+
+    if not args.serve:
+        return _emit(payload, args.json, f"{index}\n  open it directly, or add --serve")
+
+    # A module page is fetched, and fetch() is blocked on file:// URLs, so the
+    # report needs a server even though nothing about it is dynamic.
+    import functools
+    import http.server
+    import socketserver
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out_dir))
+    with socketserver.TCPServer(("127.0.0.1", args.port), handler) as server:
+        url = f"http://127.0.0.1:{args.port}/"
+        print(f"{url}\n  serving {out_dir}\n  ctrl-c to stop")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("stopped")
     return 0
 
 

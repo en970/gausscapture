@@ -67,6 +67,7 @@ Issues = "https://github.com/en970/gausscapture/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gausscapture"]
+artifacts = ["src/gausscapture/report/viewer.js", "src/gausscapture/schemas/*.json"]
 
 [tool.ruff]
 line-length = 100
