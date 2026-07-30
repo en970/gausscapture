@@ -178,11 +178,15 @@ export class Viewer {
         // view flips disconcertingly.
         this.phi = Math.min(Math.PI - 0.05, Math.max(0.05, this.phi - dy * 0.006));
       } else {
+        // Pan along the camera's own axes, taken from the view matrix. The
+        // hand-rolled version ignored tilt, so dragging sideways on a tipped
+        // view slid the scene diagonally.
+        const view = this._viewMatrix();
         const scale = this.radius * 0.0016;
-        const right = [Math.cos(this.theta), 0, -Math.sin(this.theta)];
-        this.target[0] -= right[0] * dx * scale;
-        this.target[2] -= right[2] * dx * scale;
-        this.target[1] += dy * scale;
+        for (let i = 0; i < 3; i++) {
+          this.target[i] -= view[i * 4] * dx * scale;
+          this.target[i] += view[i * 4 + 1] * dy * scale;
+        }
       }
       this.render();
     };
@@ -305,6 +309,17 @@ export class Viewer {
     gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
   }
 
+  _viewMatrix() {
+    // +Y is up because the exporter rotated the scene to make it so, using the
+    // capture's own cameras rather than assuming a convention.
+    const eye = [
+      this.target[0] + this.radius * Math.sin(this.phi) * Math.sin(this.theta),
+      this.target[1] + this.radius * Math.cos(this.phi),
+      this.target[2] + this.radius * Math.sin(this.phi) * Math.cos(this.theta),
+    ];
+    return lookAt(eye, this.target, [0, 1, 0]);
+  }
+
   render() {
     const gl = this.gl;
     const canvas = this.canvas;
@@ -319,12 +334,7 @@ export class Viewer {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     if (!this.pointCount) return;
 
-    const eye = [
-      this.target[0] + this.radius * Math.sin(this.phi) * Math.sin(this.theta),
-      this.target[1] + this.radius * Math.cos(this.phi),
-      this.target[2] + this.radius * Math.sin(this.phi) * Math.cos(this.theta),
-    ];
-    const view = lookAt(eye, this.target, [0, 1, 0]);
+    const view = this._viewMatrix();
     const projection = perspective(
       (55 * Math.PI) / 180,
       canvas.width / Math.max(1, canvas.height),

@@ -18,8 +18,14 @@ def build_splat_site(
     title: str = "GaussCapture",
     min_opacity: float = 0.02,
     max_gaussians: int | None = None,
+    colmap_model: Path | None = None,
 ) -> Path:
-    """Convert splats and write a self-contained viewer around them."""
+    """Convert splats and write a self-contained viewer around them.
+
+    ``colmap_model`` is the reconstruction the splats were trained from. Its
+    cameras determine which way is up, and without it the scene keeps
+    structure-from-motion's arbitrary frame.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -31,6 +37,7 @@ def build_splat_site(
         packed = write_splat_binary(
             ply, out_dir / f"{ply.stem}.splat",
             min_opacity=min_opacity, max_gaussians=max_gaussians,
+            colmap_model=colmap_model,
         )
         packed["label"] = _label(ply.stem)
         packed["source"] = ply.name

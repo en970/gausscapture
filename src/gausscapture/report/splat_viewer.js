@@ -271,7 +271,6 @@ export class SplatViewer {
     this.theta = 0.5;
     this.phi = 1.2;
     this.fov = 55;
-    this.upSign = 1;
     this._lastSortView = null;
     this._pending = false;
 
@@ -337,13 +336,20 @@ export class SplatViewer {
       const dx = e.clientX - lastX, dy = e.clientY - lastY;
       lastX = e.clientX; lastY = e.clientY;
       if (mode === 'orbit') {
-        this.theta -= dx * 0.005 * this.upSign;
+        this.theta -= dx * 0.005;
         this.phi = Math.min(Math.PI - 0.02, Math.max(0.02, this.phi - dy * 0.005));
       } else {
-        const s = this.radius * 0.0015;
-        this.target[0] -= (Math.cos(this.theta) * dx - 0) * s;
-        this.target[2] += Math.sin(this.theta) * dx * s;
-        this.target[1] += dy * s;
+        // Pan along the camera's own axes, read from the view matrix, rather
+        // than from angles reconstructed by hand -- the hand-rolled version
+        // drifted out of agreement with the camera as soon as it tilted.
+        const view = this._viewMatrix();
+        const right = [view[0], view[4], view[8]];
+        const up = [view[1], view[5], view[9]];
+        const s = this.radius * 0.0018;
+        for (let i = 0; i < 3; i++) {
+          this.target[i] -= right[i] * dx * s;
+          this.target[i] += up[i] * dy * s;
+        }
       }
       this.render();
     };
@@ -437,7 +443,8 @@ export class SplatViewer {
       this.target[1] + this.radius * Math.cos(this.phi),
       this.target[2] + this.radius * Math.sin(this.phi) * Math.cos(this.theta),
     ];
-    return lookAt(eye, this.target, [0, this.upSign, 0]);
+    // +Y is up because the exporter normalised the scene to make it so.
+    return lookAt(eye, this.target, [0, 1, 0]);
   }
 
   render() {

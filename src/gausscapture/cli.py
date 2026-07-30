@@ -207,6 +207,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Drop gaussians fainter than this")
     p.add_argument("--max-gaussians", type=int, default=None,
                    help="Cap the count, keeping the most significant")
+    p.add_argument("--colmap", type=Path, default=None,
+                   help="The sparse model the splat was trained from; its cameras "
+                        "fix which way is up")
     p.add_argument("--serve", action="store_true")
     p.add_argument("--port", type=int, default=8900)
     p.add_argument("--json", action="store_true")
@@ -640,6 +643,7 @@ def _cmd_viewer(args, progress) -> int:
         title=args.title,
         min_opacity=args.min_opacity,
         max_gaussians=args.max_gaussians,
+        colmap_model=args.colmap.expanduser() if args.colmap else None,
     )
     out_dir = index.parent
     scenes = json.loads((out_dir / "scenes.json").read_text(encoding="utf-8"))

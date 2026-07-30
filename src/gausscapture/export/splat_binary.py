@@ -39,6 +39,42 @@ from gausscapture.export.splat_ply import GaussianSplat, read_splat_ply
 STRIDE = 32
 
 
+def align_splat(splat: GaussianSplat, up: np.ndarray) -> GaussianSplat:
+    """Rotate a splat so ``up`` becomes +Y.
+
+    Structure-from-motion picks its world frame arbitrarily, and COLMAP's is the
+    vision convention with +y pointing *down*. Handing that to a viewer that
+    assumes +y up puts the scene upside down -- which does not look like a bug,
+    it looks like a bad reconstruction. Normalising the frame here means every
+    consumer downstream can simply assume +y is up.
+
+    Orientations are rotated along with positions. Moving only the centres would
+    leave every ellipse pointing the way it did before, which reads as a smeared
+    reconstruction rather than as an obvious error.
+    """
+    from gausscapture.pose.orientation import (
+        matrix_to_quaternion,
+        quaternion_multiply,
+        rotation_to_y_up,
+    )
+
+    rotation = rotation_to_y_up(up)
+    positions = splat.positions @ rotation.T
+
+    rotations = splat.rotations
+    if rotations is not None:
+        rotations = quaternion_multiply(matrix_to_quaternion(rotation), rotations)
+
+    return GaussianSplat(
+        positions=positions.astype(np.float32),
+        colors=splat.colors,
+        opacities=splat.opacities,
+        scales=splat.scales,
+        rotations=rotations,
+        sh_bands=splat.sh_bands,
+    )
+
+
 def pack_splat(splat: GaussianSplat) -> np.ndarray:
     """Pack a splat into the 32-byte-per-gaussian buffer."""
     if splat.rotations is None:
@@ -78,17 +114,34 @@ def write_splat_binary(
     out_path: Path,
     min_opacity: float = 0.02,
     max_gaussians: int | None = None,
+    colmap_model: Path | None = None,
 ) -> dict[str, Any]:
     """Convert a trained ``.ply`` to the packed web format.
 
     ``max_gaussians`` truncates after the importance sort, so a cap keeps the
     most significant gaussians rather than whichever happened to come first.
+
+    ``colmap_model`` points at the sparse reconstruction the splat was trained
+    from. It is what lets the up direction be recovered -- from the capture's
+    accelerometer where one exists, from the camera poses otherwise -- and the
+    splat is rotated so that direction becomes +Y. Without it the scene keeps
+    structure-from-motion's arbitrary frame, which on real captures here has
+    been more than 140 degrees off vertical.
     """
     ply_path = Path(ply_path)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     splat = read_splat_ply(ply_path).visible(min_opacity)
+
+    aligned_from = None
+    if colmap_model is not None:
+        from gausscapture.pose.orientation import world_up
+
+        up = world_up(Path(colmap_model))
+        if up is not None:
+            splat = align_splat(splat, up)
+            aligned_from = [float(v) for v in up]
     buffer = pack_splat(splat)
     count = len(buffer) // STRIDE
 
@@ -106,6 +159,7 @@ def write_splat_binary(
     return {
         "file": out_path.name,
         "count": int(count),
+        "aligned_up": aligned_from,
         "bytes": int(out_path.stat().st_size),
         "centre": [float(v) for v in centre],
         "radius": float(np.linalg.norm(high - low)) / 2 or 1.0,
