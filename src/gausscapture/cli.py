@@ -198,6 +198,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8800)
     p.add_argument("--json", action="store_true")
 
+    # viewer -----------------------------------------------------------------
+    p = add("viewer", "Build a browser viewer for trained splats.", _cmd_viewer)
+    p.add_argument("ply", type=Path, nargs="+", help="One or more trained .ply files")
+    p.add_argument("--out", type=Path, default=Path("viewer"), help="Output directory")
+    p.add_argument("--title", default="GaussCapture")
+    p.add_argument("--min-opacity", type=float, default=0.02,
+                   help="Drop gaussians fainter than this")
+    p.add_argument("--max-gaussians", type=int, default=None,
+                   help="Cap the count, keeping the most significant")
+    p.add_argument("--serve", action="store_true")
+    p.add_argument("--port", type=int, default=8900)
+    p.add_argument("--json", action="store_true")
+
     # run --------------------------------------------------------------------
     p = add("run", "Run telemetry, frames, pose, and dataset in one pass.", _cmd_run)
     p.add_argument("project")
@@ -611,6 +624,51 @@ def _cmd_report(args, progress) -> int:
     with socketserver.TCPServer(("127.0.0.1", args.port), handler) as server:
         url = f"http://127.0.0.1:{args.port}/"
         print(f"{url}\n  serving {out_dir}\n  ctrl-c to stop")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("stopped")
+    return 0
+
+
+def _cmd_viewer(args, progress) -> int:
+    from gausscapture.report.splat_site import build_splat_site
+
+    index = build_splat_site(
+        [p.expanduser() for p in args.ply],
+        args.out.expanduser(),
+        title=args.title,
+        min_opacity=args.min_opacity,
+        max_gaussians=args.max_gaussians,
+    )
+    out_dir = index.parent
+    scenes = json.loads((out_dir / "scenes.json").read_text(encoding="utf-8"))
+    payload = {
+        "viewer": str(index),
+        "scenes": [{"label": s["label"], "gaussians": s["count"],
+                    "bytes": s["bytes"]} for s in scenes],
+    }
+
+    if not args.serve:
+        human = "\n".join(
+            f"  {s['label']}: {s['count']:,} gaussians, {s['bytes'] / 1e6:.1f} MB"
+            for s in scenes
+        )
+        return _emit(payload, args.json, f"{index}\n{human}\n  add --serve to open it")
+
+    # A module page fetches its data, and fetch() is blocked on file:// URLs,
+    # so even a wholly static viewer needs a server.
+    import functools
+    import http.server
+    import socketserver
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out_dir))
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(("127.0.0.1", args.port), handler) as server:
+        print(f"http://127.0.0.1:{args.port}/")
+        for s in scenes:
+            print(f"  {s['label']}: {s['count']:,} gaussians, {s['bytes'] / 1e6:.1f} MB")
+        print("  ctrl-c to stop")
         try:
             server.serve_forever()
         except KeyboardInterrupt:

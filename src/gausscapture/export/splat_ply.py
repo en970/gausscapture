@@ -54,6 +54,10 @@ class GaussianSplat:
     colors: np.ndarray             # (N, 3) uint8, base colour with SH0 applied
     opacities: np.ndarray          # (N,) float32 in [0, 1]
     scales: np.ndarray             # (N, 3) float32, world units
+    #: (N, 4) float32 unit quaternions, (w, x, y, z). With the scales these give
+    #: each gaussian its shape and orientation, which is what separates real
+    #: splat rendering from drawing the centres as dots.
+    rotations: np.ndarray | None = None
     sh_bands: int = 0              # number of higher-order SH coefficients present
 
     def __len__(self) -> int:
@@ -80,6 +84,7 @@ class GaussianSplat:
             colors=self.colors[keep],
             opacities=self.opacities[keep],
             scales=self.scales[keep],
+            rotations=None if self.rotations is None else self.rotations[keep],
             sh_bands=self.sh_bands,
         )
 
@@ -126,11 +131,21 @@ def read_splat_ply(path: Path) -> GaussianSplat:
 
     sh_bands = len([n for n in names if n.startswith("f_rest_")])
 
+    rotations = None
+    if all(f"rot_{i}" in names for i in range(4)):
+        quats = np.stack([raw[f"rot_{i}"] for i in range(4)], axis=1).astype(np.float32)
+        # Stored unnormalised -- the optimiser never constrains them -- so a
+        # renderer that skips this gets subtly misshapen gaussians.
+        norms = np.linalg.norm(quats, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        rotations = quats / norms
+
     return GaussianSplat(
         positions=positions,
         colors=(colors * 255).astype(np.uint8),
         opacities=opacities.astype(np.float32),
         scales=scales,
+        rotations=rotations,
         sh_bands=sh_bands,
     )
 
