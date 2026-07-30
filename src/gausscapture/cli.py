@@ -192,6 +192,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = add("report", "Build a local, offline report from a benchmark run.", _cmd_report)
     p.add_argument("run", type=Path, help="A benchmark run directory")
     p.add_argument("--out", type=Path, help="Where to write it (defaults to <run>/report)")
+    p.add_argument("--splat", type=Path, action="append", default=None,
+                   help="A trained .ply to include; repeatable")
     p.add_argument("--serve", action="store_true", help="Serve it and print the URL")
     p.add_argument("--port", type=int, default=8800)
     p.add_argument("--json", action="store_true")
@@ -593,7 +595,7 @@ def _cmd_report(args, progress) -> int:
         raise GaussCaptureError(f"No results.jsonl in {run_dir}; is that a benchmark run?")
 
     out_dir = args.out or (run_dir / "report")
-    index = build_report(run_dir, out_dir)
+    index = build_report(run_dir, out_dir, splats=args.splat)
     payload = {"report": str(index), "directory": str(out_dir)}
 
     if not args.serve:

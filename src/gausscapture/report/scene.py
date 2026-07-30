@@ -85,6 +85,55 @@ def export_scene(model_dir: Path, out_dir: Path, name: str = "scene") -> dict[st
     }
 
 
+def export_splat(ply_path: Path, out_dir: Path, name: str) -> dict[str, Any]:
+    """Write a trained splat into the viewer's buffer format.
+
+    The viewer draws gaussian centres as points rather than as gaussians. That
+    is a deliberate limit, not an oversight: proper splat rendering needs
+    per-frame depth sorting and projected covariances, and SuperSplat and Spark
+    already do it well (``docs/RESEARCH.md`` section 7.1). What this view is
+    good for is comparison -- the same scene, sparse input beside dense output,
+    in one camera.
+
+    Near-transparent gaussians are dropped. Training leaves a long tail the
+    renderer never shows, and keeping them would make the result look noisier
+    than it is.
+    """
+    from gausscapture.export.splat_ply import read_splat_ply
+
+    ply_path = Path(ply_path)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    splat = read_splat_ply(ply_path).visible()
+    if len(splat) == 0:
+        return {"name": name, "points": 0}
+
+    positions = splat.positions.astype(np.float32)
+    buffer = out_dir / f"{name}.bin"
+    with buffer.open("wb") as handle:
+        handle.write(positions.tobytes())
+        handle.write(splat.colors.astype(np.uint8).tobytes())
+
+    low = np.percentile(positions, FRAMING_PERCENTILE, axis=0)
+    high = np.percentile(positions, 100 - FRAMING_PERCENTILE, axis=0)
+    centre = (low + high) / 2
+    radius = float(np.linalg.norm(high - low)) / 2 or 1.0
+
+    return {
+        "name": name,
+        "buffer": buffer.name,
+        "points": int(len(splat)),
+        "cameras": [],
+        "centre": [float(v) for v in centre],
+        "radius": radius,
+        "kind": "splat",
+        "source": ply_path.name,
+        "median_scale": float(np.median(splat.scales)),
+        "mean_opacity": float(splat.opacities.mean()),
+    }
+
+
 def write_manifest(scenes: list[dict[str, Any]], out_dir: Path) -> Path:
     path = Path(out_dir) / "scenes.json"
     path.write_text(json.dumps(scenes, indent=2), encoding="utf-8")

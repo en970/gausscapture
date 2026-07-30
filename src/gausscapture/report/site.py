@@ -9,12 +9,12 @@ from typing import Any
 
 from gausscapture.eval.harness import load_results
 from gausscapture.recon.dataset import _find_sparse_model
-from gausscapture.report.scene import export_scene
+from gausscapture.report.scene import export_scene, export_splat
 
 _VIEWER_JS = Path(__file__).parent / "viewer.js"
 
 
-def build_report(run_dir: Path, out_dir: Path) -> Path:
+def build_report(run_dir: Path, out_dir: Path, splats: list[Path] | None = None) -> Path:
     """Turn a benchmark run into a folder of static files.
 
     Everything is written relative and self-contained so the result opens from
@@ -49,6 +49,17 @@ def build_report(run_dir: Path, out_dir: Path) -> Path:
         scene["status"] = row.get("pose_status")
         scene["seconds"] = row.get("seconds_pose")
         scenes.append(scene)
+
+    # Trained splats, listed after the reconstructions they came from so the
+    # picker reads as input-then-output.
+    for ply in splats or []:
+        ply = Path(ply)
+        if not ply.exists():
+            continue
+        scene = export_splat(ply, out_dir, name=f"splat_{ply.stem}")
+        if scene.get("points"):
+            scene["capture"] = f"{ply.stem} (splat)"
+            scenes.append(scene)
 
     shutil.copyfile(_VIEWER_JS, out_dir / "viewer.js")
     (out_dir / "scenes.json").write_text(json.dumps(scenes, indent=2), encoding="utf-8")
@@ -113,8 +124,10 @@ def _page(
     run_name: str,
 ) -> str:
     options = "".join(
-        f'<option value="{i}">{s["capture"]} · {s["points"]:,} points · '
-        f'{s.get("registered", 0)} cameras</option>'
+        f'<option value="{i}">{s["capture"]} · {s["points"]:,} '
+        + ("gaussians" if s.get("kind") == "splat"
+           else f'points · {s.get("registered", 0)} cameras')
+        + "</option>"
         for i, s in enumerate(scenes)
     )
     empty = "" if scenes else "<p class=note>No reconstruction in this run produced points.</p>"
@@ -190,10 +203,15 @@ def _page(
   {empty}
 
   <p class="caution">
-    <b>This is the structure-from-motion point cloud, not a Gaussian splat.</b>
-    These are the sparse 3D points COLMAP triangulated, with the camera path it
-    solved — the input a splat is trained <em>from</em>. Training the splat
-    itself needs a CUDA GPU, which this machine does not have.
+    <b>Two kinds of scene are in the picker.</b> The plain entries are the
+    structure-from-motion point clouds COLMAP triangulated, with the camera path
+    it solved — the input a splat is trained <em>from</em>. Entries marked
+    <em>(splat)</em> are trained Gaussians, drawn here as centres rather than as
+    gaussians: proper splat rendering needs per-frame depth sorting and
+    projected covariances, and
+    <a href="https://superspl.at/editor">SuperSplat</a> already does it well.
+    What this view is for is the comparison — sparse input and dense output in
+    one camera.
   </p>
 
   <h2>Reconstruction</h2>

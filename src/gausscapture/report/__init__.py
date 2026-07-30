@@ -9,7 +9,7 @@ on the machine that produced them and are far too large to upload.
 
 from __future__ import annotations
 
-from gausscapture.report.scene import export_scene
+from gausscapture.report.scene import export_scene, export_splat
 from gausscapture.report.site import build_report
 
-__all__ = ["build_report", "export_scene"]
+__all__ = ["build_report", "export_scene", "export_splat"]
