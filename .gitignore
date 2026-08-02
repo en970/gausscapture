@@ -26,3 +26,10 @@ android/build/
 android/*.apk
 
 android/debug.keystore
+
+# Flutter build output
+app/build/
+app/.dart_tool/
+app/android/.gradle/
+app/android/local.properties
+app/.flutter-plugins-dependencies
