@@ -37,6 +37,16 @@ down. On a perfectly circular synthetic capture the two tie to machine
 precision; on the real captures here the correct mapping led by only 0.0013 to
 0.0052, which is noise. So the constant is trusted, and an alternative has to
 beat it by :data:`DECISIVE_MARGIN` before it is believed.
+
+One caveat is worth stating, because it bounds what this module may be trusted
+for. Frames are matched to IMU samples through ``frames.jsonl``, whose ``frame``
+field is an ordinal over capture results rather than an index into the encoded
+video, and the two drift by about two frames in either direction (see
+``docs/ANDROID_AUDIT.md`` §2). A sensitivity sweep shifting the mapping by ±1,
+±2 and ±4 frames moves the recovered direction by at most 1.58° and never drops
+agreement below 0.9978 — gravity varies slowly and is averaged over the whole
+capture, so it absorbs the error. A faster-varying signal, per-frame orientation
+for pose seeding above all, would not.
 """
 
 from __future__ import annotations
