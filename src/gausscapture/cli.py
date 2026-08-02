@@ -86,6 +86,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--target-type", default="unknown")
     p.add_argument("--json", action="store_true")
 
+    # pull -------------------------------------------------------------------
+    p = add("pull", "Take new captures off a connected phone.", _cmd_pull)
+    p.add_argument("--list", action="store_true",
+                   help="Show what is on the phone without copying anything")
+    p.add_argument("--all", action="store_true",
+                   help="Re-import captures already present locally")
+    p.add_argument("--serial", default=None, help="Target one device when several are attached")
+    p.add_argument("--adb", default="adb", help="Path to adb")
+    p.add_argument("--json", action="store_true", help="Emit JSON")
+
     # pack -------------------------------------------------------------------
     p = add("pack", "Validate or export a CapturePack.", _cmd_pack)
     p.add_argument("action", choices=["validate", "export"])
@@ -372,6 +382,86 @@ def _cmd_import(args, progress) -> int:
 
     store.update(project.id, status=STATUS_IMPORTED, last_step="Imported capture")
     return _emit(payload, args.json, f"imported into {project.id}")
+
+
+def _cmd_pull(args, progress) -> int:
+    """Import every capture the phone has that this machine does not."""
+    from gausscapture.ingest.pull import (
+        devices,
+        known_session_ids,
+        list_captures,
+        pull_capture,
+    )
+    from gausscapture.pack import archive
+    from gausscapture.project import STATUS_IMPORTED, ProjectStore
+
+    attached = devices(args.adb)
+    if not attached:
+        raise GaussCaptureError(
+            "No phone found. Connect it by USB, unlock it, and allow USB debugging."
+        )
+    serial = args.serial or attached[0]
+    if len(attached) > 1 and not args.serial:
+        progress.log(f"{len(attached)} devices attached; using {serial}")
+
+    captures = list_captures(args.adb, serial)
+    if not captures:
+        return _emit({"device": serial, "captures": []}, args.json,
+                     "The phone has no captures on it")
+
+    store = ProjectStore()
+    known = set() if args.all else known_session_ids(store)
+
+    # A capture with no session id cannot be recognised on a later run, so it is
+    # matched by name instead -- less reliable, but better than importing it
+    # again on every plug-in.
+    existing_names = {p.name for p in store.list()}
+    fresh = [
+        c for c in captures
+        if c.usable
+        and (c.session_id not in known if c.session_id else c.name not in existing_names)
+    ]
+    skipped = len(captures) - len(fresh)
+
+    if args.list or not fresh:
+        for capture in captures:
+            state = "new" if capture in fresh else ("unusable" if not capture.usable else "have")
+            progress.log(f"  [{state:>8}] {capture.name}  {capture.bytes / (1 << 20):.0f} MB"
+                         + (f"  missing {', '.join(capture.missing)}" if capture.missing else ""))
+        summary = f"{len(fresh)} new, {skipped} already here"
+        return _emit(
+            {"device": serial, "captures": [c.to_dict() for c in captures],
+             "new": [c.name for c in fresh]},
+            args.json, summary,
+        )
+
+    imported = []
+    for index, capture in enumerate(fresh, start=1):
+        progress.update(
+            int(100 * (index - 1) / len(fresh)), f"pulling {capture.name} ({index}/{len(fresh)})"
+        )
+        project = store.create(capture.name, "unknown")
+        try:
+            pull_capture(capture, project.path / "capturepack",
+                         args.adb, serial, progress=progress)
+        except GaussCaptureError as error:
+            # The project is empty, so removing it keeps a failed pull from
+            # leaving a shell that later looks like a real capture.
+            store.delete(project.id)
+            progress.log(f"  {capture.name}: {error}")
+            continue
+
+        archive.write_checksums(project.path / "capturepack", progress)
+        store.update(project.id, status=STATUS_IMPORTED,
+                     last_step=f"Pulled from {serial}")
+        imported.append({"capture": capture.name, "project": project.id})
+
+    progress.update(100, "done")
+    return _emit(
+        {"device": serial, "imported": imported, "skipped": skipped},
+        args.json,
+        f"imported {len(imported)} capture(s); {skipped} already here",
+    )
 
 
 def _cmd_pack(args, progress) -> int:
