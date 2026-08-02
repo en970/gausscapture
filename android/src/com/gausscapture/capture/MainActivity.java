@@ -3,12 +3,16 @@ package com.gausscapture.capture;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.content.Intent;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.graphics.SurfaceTexture;
 import android.hardware.SensorManager;
 import android.hardware.camera2.CameraManager;
+import android.net.Uri;
+import android.provider.Settings;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -19,7 +23,9 @@ import android.os.Vibrator;
 import android.os.VibratorManager;
 import android.view.Surface;
 import android.view.TextureView;
+import android.view.KeyEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -72,6 +78,10 @@ public class MainActivity extends Activity implements CameraController.Listener 
     private TextView presetHintView;
     private TextView coachView;
     private TextView timerView;
+    private TextView timerTargetView;
+    private View perimeterView;
+    /** Which quarters of the target have already been marked with a haptic tick. */
+    private int pacingTicked;
     private TextView techView;
     private LinearLayout hudView;
     private ProgressBar progressView;
@@ -81,6 +91,10 @@ public class MainActivity extends Activity implements CameraController.Listener 
 
     private CameraController camera;
     private SensorLogger sensors;
+    private final Clocks clocks = new Clocks();
+    /** True from the moment record is tapped until the session is configured or has failed. */
+    private volatile boolean starting;
+    private Storage storage;
     private HandlerThread backgroundThread;
     private Handler backgroundHandler;
     private final Handler uiHandler = new Handler();
@@ -103,11 +117,17 @@ public class MainActivity extends Activity implements CameraController.Listener 
             long elapsedMs =
                     (SystemClock.elapsedRealtimeNanos() - startRealtimeNanos) / 1_000_000L;
             int seconds = (int) (elapsedMs / 1000);
-            timerView.setText(String.format(Locale.US, "%d:%02d / %d:%02d",
-                    seconds / 60, seconds % 60,
-                    preset.targetSeconds / 60, preset.targetSeconds % 60));
-            progressView.setProgress(
-                    (int) Math.min(1000, elapsedMs * 1000 / (preset.targetSeconds * 1000L)));
+            timerView.setText(String.format(Locale.US, "%d:%02d", seconds / 60, seconds % 60));
+            int permille = (int) Math.min(1000, elapsedMs * 1000 / (preset.targetSeconds * 1000L));
+            progressView.setProgress(permille);
+
+            // Pacing ticks answer "am I done yet" with no glance at all, which is the point when
+            // the operator's gaze belongs on the subject.
+            int quarter = Math.min(4, permille / 250);
+            while (pacingTicked < quarter) {
+                pacingTicked++;
+                buzz(pacingTicked == 4 ? 60 : 15);
+            }
             updateCoach();
             uiHandler.postDelayed(this, 200);
         }
@@ -125,6 +145,8 @@ public class MainActivity extends Activity implements CameraController.Listener 
         presetHintView = findViewById(R.id.presetHint);
         coachView = findViewById(R.id.coach);
         timerView = findViewById(R.id.timer);
+        timerTargetView = findViewById(R.id.timerTarget);
+        perimeterView = findViewById(R.id.perimeter);
         techView = findViewById(R.id.tech);
         hudView = findViewById(R.id.hud);
         progressView = findViewById(R.id.progress);
@@ -132,18 +154,17 @@ public class MainActivity extends Activity implements CameraController.Listener 
         presetButton = findViewById(R.id.presetButton);
         takesButton = findViewById(R.id.takesButton);
 
-        sensors = new SensorLogger((SensorManager) getSystemService(Context.SENSOR_SERVICE));
+        sensors = new SensorLogger(
+                (SensorManager) getSystemService(Context.SENSOR_SERVICE), clocks);
+        storage = Storage.open(this);
+        offerSharedStorage();
         camera = new CameraController(this, previewView,
                 (CameraManager) getSystemService(Context.CAMERA_SERVICE), this);
 
         recordButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (recording) {
-                    stopRecording();
-                } else {
-                    startRecording();
-                }
+                onRecordTapped();
             }
         });
         presetButton.setOnClickListener(new View.OnClickListener() {
@@ -170,11 +191,13 @@ public class MainActivity extends Activity implements CameraController.Listener 
     @Override
     protected void onResume() {
         super.onResume();
+        // The grant can be given or revoked while the app is backgrounded, so the location is
+        // chosen again here rather than once at startup.
+        storage = Storage.open(this);
         backgroundThread = new HandlerThread("GaussCaptureCamera");
         backgroundThread.start();
         backgroundHandler = new Handler(backgroundThread.getLooper());
         camera.setHandler(backgroundHandler);
-        sensors.listen(backgroundHandler);
 
         if (previewView.isAvailable()) {
             camera.open(displayRotation());
@@ -206,7 +229,6 @@ public class MainActivity extends Activity implements CameraController.Listener 
         if (recording) {
             stopRecording();
         }
-        sensors.stopListening();
         camera.close();
         if (backgroundThread != null) {
             backgroundThread.quitSafely();
@@ -293,35 +315,144 @@ public class MainActivity extends Activity implements CameraController.Listener 
         if (!coachVisible && blur > BLUR_WARN_PIXELS) {
             coachView.setText("Slow down");
             coachView.setVisibility(View.VISIBLE);
+            perimeterView.setBackgroundResource(R.drawable.perimeter_warn);
+            // One buzz on entering the state, never while it persists. Repetition is how an alert
+            // teaches the person to ignore it.
+            buzz(40);
             coachVisible = true;
             coachShownAt = now;
         } else if (coachVisible && blur < BLUR_CLEAR_PIXELS
                 && now - coachShownAt > BLUR_MIN_VISIBLE_MS) {
             coachView.setVisibility(View.INVISIBLE);
+            perimeterView.setBackgroundResource(R.drawable.perimeter_recording);
             coachVisible = false;
         }
+    }
+
+    /**
+     * The one entry point for starting and stopping, whatever triggered it.
+     *
+     * <p>The button is disabled for the whole start transition rather than only once recording is
+     * under way. Session configuration takes 100-500 ms, and a second tap inside that window used
+     * to open a second session directory and a second writer over the same imu.jsonl, dropping the
+     * first unflushed -- reproducible with a double-tap (audit D07).
+     */
+    private void onRecordTapped() {
+        if (starting) {
+            return;
+        }
+        if (recording) {
+            stopRecording();
+        } else {
+            starting = true;
+            recordButton.setEnabled(false);
+            startRecording();
+        }
+    }
+
+    /**
+     * Volume keys start and stop a take.
+     *
+     * <p>The largest one-handed win available for a few lines: during a take the priority inverts,
+     * because starting no longer matters and stopping has to be trivial while walking with the
+     * phone held out. Deliberately not tap-anywhere-to-stop -- a stray palm ending a
+     * sixty-second walk is worse than a fumbled stop.
+     */
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            if (event.getRepeatCount() == 0) {
+                onRecordTapped();
+            }
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        // Swallowed so the system volume panel never appears over the viewfinder.
+        return keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP
+                || super.onKeyUp(keyCode, event);
+    }
+
+    /**
+     * Offer to make captures visible to a computer, once.
+     *
+     * <p>Without all-files access the app writes to its private directory, which One UI hides from
+     * both the file manager and MTP -- so the phone can be plugged in and the takes simply will not
+     * appear. Recording still works either way, so this asks rather than blocks, and asks only when
+     * the answer would change something.
+     */
+    private void offerSharedStorage() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Storage.canUseSharedStorage()) {
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Make takes visible on a computer")
+                .setMessage("Without file access, takes are stored where macOS cannot see them "
+                        + "and can only be copied with adb. Grant access to write them to "
+                        + "Documents/GaussCapture instead.")
+                .setPositiveButton("Grant", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        try {
+                            Intent intent = new Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    Uri.parse("package:" + getPackageName()));
+                            startActivity(intent);
+                        } catch (Exception error) {
+                            startActivity(new Intent(
+                                    Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                        }
+                    }
+                })
+                .setNegativeButton("Use adb", null)
+                .show();
     }
 
     // ---------------------------------------------------------------- recording
 
     private void startRecording() {
-        sessionDir = new File(getExternalFilesDir(null), preset.id + "_"
-                + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()));
-        if (!sessionDir.mkdirs() && !sessionDir.isDirectory()) {
+        sessionDir = storage.newSessionDir(preset.id);
+        if (sessionDir == null) {
             onError("Cannot create a folder for this take");
             return;
         }
+
+        // The routine is "record all the time", and the default display timeout is 30 seconds.
+        // Without this the screen sleeps mid-walk, onPause fires and the take is truncated
+        // (audit D04). Full brightness for the duration is the other half: it is roughly 1300 nits
+        // on an S22, and no colour choice can compensate for a dim panel in sunlight.
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        WindowManager.LayoutParams attributes = getWindow().getAttributes();
+        attributes.screenBrightness = 1.0f;
+        getWindow().setAttributes(attributes);
 
         startRealtimeNanos = SystemClock.elapsedRealtimeNanos();
         startUptimeNanos = System.nanoTime();
         startWallMillis = System.currentTimeMillis();
 
-        try {
-            sensors.start(new File(sessionDir, "imu.jsonl"), startRealtimeNanos);
-        } catch (Exception e) {
-            onError("Cannot write sensor data: " + e.getMessage());
-            return;
-        }
+        sensors.start(new File(sessionDir, "imu.jsonl"), startRealtimeNanos);
+
+        camera.setRecorderProblem(new CameraController.RecorderProblem() {
+            @Override
+            public void onRecorderProblem(final String message, final boolean fatal) {
+                uiHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!recording) {
+                            return;
+                        }
+                        // Encoding has already stopped. Ending the take now keeps the file
+                        // finalised and tells the operator, instead of counting up over a video
+                        // that is no longer being written (audit D05).
+                        onError(message);
+                        stopRecording();
+                    }
+                });
+            }
+        });
 
         camera.startRecording(sessionDir, displayRotation(), new CameraController.RecordingCallback() {
             @Override
@@ -330,6 +461,11 @@ public class MainActivity extends Activity implements CameraController.Listener 
                     @Override
                     public void run() {
                         recording = true;
+                        starting = false;
+                        pacingTicked = 0;
+                        recordButton.setEnabled(true);
+                        perimeterView.setBackgroundResource(R.drawable.perimeter_recording);
+                        perimeterView.setVisibility(View.VISIBLE);
                         buzz(30);
                         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LOCKED);
                         recordButton.setBackgroundResource(R.drawable.btn_stop);
@@ -343,19 +479,30 @@ public class MainActivity extends Activity implements CameraController.Listener 
             }
 
             @Override
-            public void onFailed(String message) {
-                sensors.closeFile();
+            public void onFailed(final String message) {
+                sensors.stop();
                 deleteRecursively(sessionDir);
-                onError(message);
+                uiHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        starting = false;
+                        recordButton.setEnabled(true);
+                        onError(message);
+                    }
+                });
             }
         });
     }
 
     private void stopRecording() {
         recording = false;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        WindowManager.LayoutParams attributes = getWindow().getAttributes();
+        attributes.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+        getWindow().setAttributes(attributes);
         uiHandler.removeCallbacks(tick);
         boolean ok = camera.stopRecording();
-        sensors.closeFile();
+        sensors.stop();
         buzz(20);
 
         String message;
@@ -378,6 +525,7 @@ public class MainActivity extends Activity implements CameraController.Listener 
                 recordButton.setContentDescription("Start recording");
                 hudView.setVisibility(View.INVISIBLE);
                 coachView.setVisibility(View.INVISIBLE);
+                perimeterView.setVisibility(View.INVISIBLE);
                 coachVisible = false;
                 presetButton.setEnabled(true);
                 takesButton.setEnabled(true);
@@ -431,24 +579,24 @@ public class MainActivity extends Activity implements CameraController.Listener 
             video.put("has_audio", false);
             manifest.put("video", video);
 
+            // These used to be hardcoded true (audit D11). A Samsung HAL routinely honours such
+            // requests only partially, and a manifest that asserts what it did not check is worse
+            // than one that admits it does not know: downstream code trusts it either way. What is
+            // recorded now is what was *requested*; frames.jsonl carries the per-frame 3A and lens
+            // state that says what actually happened.
             JSONObject settings = new JSONObject();
-            settings.put("exposure_locked", true);
-            settings.put("white_balance_locked", true);
-            settings.put("focus_locked", true);
-            settings.put("stabilisation_disabled", true);
-            settings.put("lens_switching_disabled", true);
-            settings.put("storage_mode", "phone");
+            settings.put("exposure_lock_requested", true);
+            settings.put("white_balance_lock_requested", true);
+            settings.put("focus_lock_requested", true);
+            settings.put("stabilisation_disable_requested", true);
+            settings.put("verified_per_frame_in", "frames.jsonl");
+            settings.put("storage_mode", storage.isVisibleToDesktop() ? "shared" : "app_private");
+            settings.put("storage_path", storage.describePath());
             manifest.put("capture_settings", settings);
 
             manifest.put("time_base", "nanoseconds_elapsed_realtime");
-            JSONObject clocks = new JSONObject();
-            clocks.put("recording_start_elapsed_realtime_ns", startRealtimeNanos);
-            clocks.put("recording_start_uptime_ns", startUptimeNanos);
-            clocks.put("recording_start_wall_ms", startWallMillis);
-            clocks.put("camera_timestamp_source",
-                    camera.timestampsAligned() ? "REALTIME" : "UNKNOWN");
-            clocks.put("camera_imu_same_clock", camera.timestampsAligned());
-            manifest.put("clocks", clocks);
+            manifest.put("clocks", clocks.toJson(startRealtimeNanos, startUptimeNanos,
+                    startWallMillis, camera.firstEncodedFrameNs()));
 
             JSONObject files = new JSONObject();
             files.put("intrinsics", "intrinsics.json");
@@ -458,6 +606,16 @@ public class MainActivity extends Activity implements CameraController.Listener 
             files.put("light", JSONObject.NULL);
             manifest.put("metadata_files", files);
             manifest.put("imu_samples", sensors.sampleCount());
+
+            // A gap that is known about is a limitation; a gap that is not is a wrong answer.
+            JSONObject health = new JSONObject();
+            health.put("imu_lines_written", sensors.linesWritten());
+            health.put("imu_lines_dropped", sensors.linesDropped());
+            health.put("imu_rate_hz", sensors.measuredRateHz());
+            health.put("frame_rows_dropped", camera.framesDropped());
+            String imuFailure = sensors.failure();
+            health.put("imu_write_error", imuFailure == null ? JSONObject.NULL : imuFailure);
+            manifest.put("stream_health", health);
 
             write(new File(sessionDir, "manifest.json"), manifest.toString(2));
             write(new File(sessionDir, "intrinsics.json"), camera.intrinsics().toString(2));
@@ -473,7 +631,8 @@ public class MainActivity extends Activity implements CameraController.Listener 
         presetNameView.setText(chosen.title);
         presetHintView.setText(chosen.hint);
         presetButton.setText(chosen.shortLabel());
-        timerView.setText(String.format(Locale.US, "0:00 / %d:%02d",
+        timerView.setText("0:00");
+        timerTargetView.setText(String.format(Locale.US, "of %d:%02d",
                 chosen.targetSeconds / 60, chosen.targetSeconds % 60));
     }
 
@@ -490,7 +649,7 @@ public class MainActivity extends Activity implements CameraController.Listener 
     }
 
     private List<File> takes() {
-        File root = getExternalFilesDir(null);
+        File root = storage.root();
         File[] children = root == null ? null : root.listFiles();
         List<File> result = new ArrayList<>();
         if (children != null) {

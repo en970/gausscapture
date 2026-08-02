@@ -17,7 +17,9 @@ import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.graphics.Rect;
 import android.media.MediaRecorder;
+import android.os.Build;
 import android.util.Range;
 import android.util.Size;
 import android.util.SizeF;
@@ -31,6 +33,7 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -79,7 +82,17 @@ public final class CameraController {
     private int sensorOrientation = 90;
     private Size videoSize = new Size(TARGET_WIDTH, TARGET_HEIGHT);
 
-    private BufferedWriter frameWriter;
+    private JsonlWriter frameWriter;
+    /**
+     * SENSOR_TIMESTAMP of the first frame the encoder accepted.
+     *
+     * <p>For a camera feeding a MediaRecorder surface this value <em>is</em> the presentation
+     * timestamp the muxer writes, so recording it anchors frames.jsonl to video.mp4 exactly.
+     * Without it the two are matched by ordinal, which drifts by about two frames in an
+     * unpredictable direction (audit D03).
+     */
+    private volatile Long firstEncodedFrameNs;
+    private final StringBuilder frameLine = new StringBuilder(256);
     private volatile int frameCount;
     private volatile long lastExposureNanos;
     private volatile int lastIso;
@@ -168,12 +181,21 @@ public final class CameraController {
 
                 @Override
                 public void onDisconnected(CameraDevice camera) {
+                    // A take in flight is now unrecoverable, and saying so is the difference
+                    // between losing one capture and believing a broken file is fine (audit D02).
+                    if (recording && recorderProblem != null) {
+                        recorderProblem.onRecorderProblem(
+                                "The camera was taken by another app", true);
+                    }
                     camera.close();
                     device = null;
                 }
 
                 @Override
                 public void onError(CameraDevice camera, int error) {
+                    if (recording && recorderProblem != null) {
+                        recorderProblem.onRecorderProblem("The camera failed (" + error + ")", true);
+                    }
                     camera.close();
                     device = null;
                     listener.onError("Camera error " + error);
@@ -267,6 +289,9 @@ public final class CameraController {
         }
         try {
             Surface previewSurface = newPreviewSurface(displayRotation);
+            if (previewSurface == null) {
+                return;
+            }
             CaptureRequest.Builder builder =
                     device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             builder.addTarget(previewSurface);
@@ -284,7 +309,7 @@ public final class CameraController {
                                 configured.setRepeatingRequest(builder.build(), metadataCallback,
                                         handler);
                                 listener.onReady(summary());
-                            } catch (CameraAccessException e) {
+                            } catch (CameraAccessException | IllegalStateException e) {
                                 listener.onError("Preview failed: " + e.getMessage());
                             }
                         }
@@ -299,11 +324,28 @@ public final class CameraController {
         }
     }
 
+    /** Surfaces handed to a session, released when it is replaced. Never released before: D19. */
+    private final List<Surface> liveSurfaces = new ArrayList<>();
+
+    private void releaseSurfaces() {
+        for (Surface surface : liveSurfaces) {
+            surface.release();
+        }
+        liveSurfaces.clear();
+    }
+
     private Surface newPreviewSurface(int displayRotation) {
         SurfaceTexture texture = view.getSurfaceTexture();
+        if (texture == null) {
+            // onSurfaceTextureDestroyed released it, and the stop-then-restart-preview path can
+            // still get here afterwards (audit D18).
+            return null;
+        }
         texture.setDefaultBufferSize(videoSize.getWidth(), videoSize.getHeight());
         applyTransform(displayRotation);
-        return new Surface(texture);
+        Surface surface = new Surface(texture);
+        liveSurfaces.add(surface);
+        return surface;
     }
 
     /** Degrees the camera image must be rotated to appear upright on screen. */
@@ -419,30 +461,76 @@ public final class CameraController {
                     if (!recording) {
                         return;
                     }
+                    Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
+                    if (firstEncodedFrameNs == null && timestamp != null) {
+                        firstEncodedFrameNs = timestamp;
+                    }
                     try {
-                        JSONObject row = new JSONObject();
-                        Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
-                        row.put("t_ns", timestamp == null ? JSONObject.NULL : timestamp);
-                        row.put("iso", iso == null ? JSONObject.NULL : iso);
-                        row.put("exposure_ns", exposure == null ? JSONObject.NULL : exposure);
-                        row.put("focus_distance", focus == null ? JSONObject.NULL : focus);
-                        Float aperture = result.get(CaptureResult.LENS_APERTURE);
-                        row.put("aperture", aperture == null ? JSONObject.NULL : aperture);
-                        Float focal = result.get(CaptureResult.LENS_FOCAL_LENGTH);
-                        row.put("focal_length_mm", focal == null ? JSONObject.NULL : focal);
-                        row.put("frame", frameCount);
-                        synchronized (CameraController.this) {
-                            if (frameWriter != null) {
-                                frameWriter.write(row.toString());
-                                frameWriter.write("\n");
+                        JsonlWriter writer = frameWriter;
+                        if (writer == null) {
+                            return;
+                        }
+                        frameLine.setLength(0);
+                        frameLine.append("{\"t_ns\":").append(timestamp)
+                                .append(",\"frame\":").append(frameCount);
+                        appendNumber(frameLine, "iso", iso);
+                        appendNumber(frameLine, "exposure_ns", exposure);
+                        appendNumber(frameLine, "focus_distance", focus);
+                        appendNumber(frameLine, "aperture", result.get(CaptureResult.LENS_APERTURE));
+                        appendNumber(frameLine, "focal_length_mm",
+                                result.get(CaptureResult.LENS_FOCAL_LENGTH));
+
+                        // Everything below is recorded because the manifest used to *assert* it.
+                        // The crop region is the authoritative answer to how the sensor array maps
+                        // onto the recorded frame, and it is what makes the focal-length rescale
+                        // correct rather than an assumption about which axis was cropped (D23).
+                        Rect crop = result.get(CaptureResult.SCALER_CROP_REGION);
+                        if (crop != null) {
+                            frameLine.append(",\"crop\":[").append(crop.left).append(',')
+                                    .append(crop.top).append(',').append(crop.right).append(',')
+                                    .append(crop.bottom).append(']');
+                        }
+                        appendNumber(frameLine, "ae_state", result.get(CaptureResult.CONTROL_AE_STATE));
+                        appendNumber(frameLine, "awb_state", result.get(CaptureResult.CONTROL_AWB_STATE));
+                        appendNumber(frameLine, "lens_state", result.get(CaptureResult.LENS_STATE));
+                        appendNumber(frameLine, "rolling_shutter_skew_ns",
+                                result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW));
+
+                        // On a logical multi-camera -- which camera 0 is on an S22 -- the HAL may
+                        // switch physical lenses in low light with no zoom change, silently
+                        // invalidating the single intrinsic model the whole capture assumes (D21).
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            String physical = result.get(
+                                    CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID);
+                            if (physical != null) {
+                                frameLine.append(",\"physical_id\":\"").append(physical).append('"');
                             }
                         }
+                        frameLine.append('}');
+                        writer.append(frameLine);
                         frameCount++;
-                    } catch (Exception ignored) {
+                    } catch (RuntimeException ignored) {
                         // A dropped metadata row must never interrupt a recording.
                     }
                 }
             };
+
+    /** Append {@code ,"name":value}, or nothing at all when the device did not report it. */
+    private static void appendNumber(StringBuilder out, String name, Number value) {
+        if (value != null) {
+            out.append(",\"").append(name).append("\":").append(value);
+        }
+    }
+
+    /** True once the encoder has produced at least one frame we can anchor to. */
+    public Long firstEncodedFrameNs() {
+        return firstEncodedFrameNs;
+    }
+
+    public long framesDropped() {
+        JsonlWriter writer = frameWriter;
+        return writer == null ? 0 : writer.linesDropped();
+    }
 
     // ---------------------------------------------------------------- recording
 
@@ -458,7 +546,8 @@ public final class CameraController {
         }
         try {
             frameCount = 0;
-            frameWriter = new BufferedWriter(new FileWriter(new File(sessionDir, "frames.jsonl")));
+            firstEncodedFrameNs = null;
+            frameWriter = new JsonlWriter(new File(sessionDir, "frames.jsonl"));
 
             if (session != null) {
                 session.close();
@@ -469,6 +558,10 @@ public final class CameraController {
             recorder.prepare();
 
             Surface previewSurface = newPreviewSurface(displayRotation);
+            if (previewSurface == null) {
+                callback.onFailed("The preview is not available yet");
+                return;
+            }
             Surface recorderSurface = recorder.getSurface();
 
             CaptureRequest.Builder builder =
@@ -527,22 +620,37 @@ public final class CameraController {
                 recorder = null;
             }
         }
-        synchronized (this) {
-            if (frameWriter != null) {
-                try {
-                    frameWriter.flush();
-                    frameWriter.close();
-                } catch (IOException ignored) {
-                    // Nothing useful to do at this point.
-                }
-                frameWriter = null;
-            }
+        JsonlWriter writer = frameWriter;
+        frameWriter = null;
+        if (writer != null) {
+            writer.close();
         }
         return ok;
     }
 
+    /**
+     * Signalled when the encoder stops for a reason the operator cannot see: a full card, the 4 GB
+     * MPEG-4 limit at roughly 22 minutes, or a muxer fault. None of these used to reach anyone --
+     * encoding simply halted while the timer kept counting (audit D05).
+     */
+    public interface RecorderProblem {
+        void onRecorderProblem(String message, boolean fatal);
+    }
+
+    private RecorderProblem recorderProblem;
+
+    public void setRecorderProblem(RecorderProblem listener) {
+        this.recorderProblem = listener;
+    }
+
+    @SuppressWarnings("deprecation")
     private MediaRecorder buildRecorder(File output, int displayRotation) {
-        MediaRecorder r = new MediaRecorder(context);
+        // The Context constructor is API 31; minSdk is 28. javac against android.jar does not
+        // enforce API levels, so the old unconditional call compiled cleanly and threw
+        // NoSuchMethodError on the first tap of record on anything older (audit D01).
+        MediaRecorder r = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                ? new MediaRecorder(context)
+                : new MediaRecorder();
         r.setVideoSource(MediaRecorder.VideoSource.SURFACE);
         r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
         r.setOutputFile(output.getAbsolutePath());
@@ -552,6 +660,31 @@ public final class CameraController {
         r.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
         // Without this the file is born rotated and every downstream tool inherits the mistake.
         r.setOrientationHint(previewRotation(displayRotation));
+
+        r.setOnErrorListener(new MediaRecorder.OnErrorListener() {
+            @Override
+            public void onError(MediaRecorder mr, int what, int extra) {
+                recording = false;
+                if (recorderProblem != null) {
+                    recorderProblem.onRecorderProblem("The encoder stopped (" + what + ")", true);
+                }
+            }
+        });
+        r.setOnInfoListener(new MediaRecorder.OnInfoListener() {
+            @Override
+            public void onInfo(MediaRecorder mr, int what, int extra) {
+                if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED
+                        || what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
+                    recording = false;
+                    if (recorderProblem != null) {
+                        recorderProblem.onRecorderProblem("Recording hit its size limit", true);
+                    }
+                }
+            }
+        });
+        // Stop just short of where MPEG-4 stops being able to address the file, so the take ends
+        // with a valid trailer instead of being truncated mid-write.
+        r.setMaxFileSize(3_800_000_000L);
         return r;
     }
 

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Recording and healthy: presence, not alarm. Hue stays reserved for states that need acting on. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <stroke android:width="8dp" android:color="#2EFFFFFF" />
+    <solid android:color="#00000000" />
+</shape>
