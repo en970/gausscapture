@@ -196,6 +196,54 @@ class TestPullCapture:
             pull.pull_capture(capture, tmp_path / "capturepack")
 
 
+class TestMarkOffloaded:
+    def test_writes_the_sentinel_onto_the_phone(self, phone, tmp_path):
+        fake = phone(FakePhone({"take": FULL}))
+        pushed: list[tuple[str, str]] = []
+        original = fake.__call__
+
+        def record(args, *rest, **kwargs):
+            if args[0] == "push":
+                pushed.append((args[1], args[2]))
+                return _completed("1 file pushed")
+            return original(args, *rest, **kwargs)
+
+        import gausscapture.ingest.pull as module
+
+        module._adb = record
+        capture = pull.list_captures()[0]
+        assert pull.mark_offloaded(capture, host="mac", when="2026-08-04T09:00:00+00:00")
+
+        assert len(pushed) == 1
+        local, remote = pushed[0]
+        assert remote.endswith(f"take/{pull.OFFLOAD_SENTINEL}")
+        # The temporary file must not survive the call.
+        assert not Path(local).exists()
+
+    def test_reports_failure_rather_than_claiming_success(self, phone):
+        fake = phone(FakePhone({"take": FULL}))
+        original = fake.__call__
+
+        def refuse(args, *rest, **kwargs):
+            if args[0] == "push":
+                return _completed(returncode=1, stderr="read-only file system")
+            return original(args, *rest, **kwargs)
+
+        import gausscapture.ingest.pull as module
+
+        module._adb = refuse
+        capture = pull.list_captures()[0]
+        assert pull.mark_offloaded(capture, host="mac", when="now") is False
+
+    def test_a_marked_capture_is_recognised_on_the_next_listing(self, phone):
+        phone(FakePhone({"take": {**FULL, pull.OFFLOAD_SENTINEL: 120}}))
+        assert pull.list_captures()[0].offloaded is True
+
+    def test_an_unmarked_capture_is_not(self, phone):
+        phone(FakePhone({"take": FULL}))
+        assert pull.list_captures()[0].offloaded is False
+
+
 class TestKnownSessionIds:
     def test_reads_ids_out_of_imported_projects(self, tmp_path):
         class Store:

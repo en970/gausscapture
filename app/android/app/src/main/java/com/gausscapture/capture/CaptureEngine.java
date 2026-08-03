@@ -56,6 +56,17 @@ public final class CaptureEngine {
     private CameraController camera;
     private Events events;
 
+    /**
+     * Where the chosen protocol is remembered.
+     *
+     * <p>It was not remembered at all before. The operator picked C, the process was recreated for
+     * any of the ordinary reasons, and the next take was silently written as A -- and a
+     * mislabelled capture is not a weaker data point, it is a wrong one. Preset's own
+     * documentation makes that argument; this is the case it did not defend against (audit D26).
+     */
+    private static final String PREFERENCES = "gausscapture";
+    private static final String KEY_PRESET = "preset";
+
     private File sessionDir;
     private Preset preset = Preset.ALL[0];
     private volatile boolean recording;
@@ -70,6 +81,12 @@ public final class CaptureEngine {
         this.sensors = new SensorLogger(
                 (SensorManager) activity.getSystemService(Context.SENSOR_SERVICE), clocks);
         this.storage = Storage.open(activity);
+
+        String remembered = activity.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                .getString(KEY_PRESET, null);
+        if (remembered != null) {
+            setPreset(remembered);
+        }
     }
 
     public void setEvents(Events events) {
@@ -101,6 +118,10 @@ public final class CaptureEngine {
         for (Preset candidate : Preset.ALL) {
             if (candidate.id.equals(id)) {
                 preset = candidate;
+                activity.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                        .edit()
+                        .putString(KEY_PRESET, id)
+                        .apply();
                 return;
             }
         }

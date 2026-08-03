@@ -34,6 +34,10 @@ from gausscapture.progress import NullProgress, Progress
 #: Where the capture app writes on the device.
 DEVICE_ROOT = "/sdcard/Android/data/com.gausscapture.capture/files"
 
+#: Written back to the phone once a capture is verifiably on this computer. The app reads it to
+#: show which takes are still the only copy.
+OFFLOAD_SENTINEL = "offloaded.json"
+
 #: A session is only worth importing if it has video to reconstruct from and a
 #: manifest to describe it. The rest is recorded as missing rather than fatal,
 #: so a capture cut short by a flat battery can still be looked at.
@@ -47,6 +51,7 @@ class RemoteCapture:
 
     name: str                       # directory name on the device
     session_id: str | None = None
+    offloaded: bool = False
     preset: str | None = None
     created_at: str | None = None
     bytes: int = 0
@@ -67,6 +72,7 @@ class RemoteCapture:
             "preset": self.preset,
             "created_at": self.created_at,
             "bytes": self.bytes,
+            "offloaded": self.offloaded,
             "files": self.files,
             "usable": self.usable,
             "missing": self.missing,
@@ -143,7 +149,12 @@ def list_captures(adb: str = "adb", serial: str | None = None,
         if not files:
             continue
 
-        capture = RemoteCapture(name=name, files=files, bytes=sum(files.values()))
+        capture = RemoteCapture(
+            name=name,
+            files=files,
+            bytes=sum(files.values()),
+            offloaded=OFFLOAD_SENTINEL in files,
+        )
         _read_manifest(capture, root, adb, serial)
         captures.append(capture)
     return captures
@@ -230,6 +241,39 @@ def pull_capture(
                 destination.parent.rmdir()
             except OSError:
                 pass
+
+
+def mark_offloaded(
+    capture: RemoteCapture,
+    host: str,
+    when: str,
+    adb: str = "adb",
+    serial: str | None = None,
+    root: str = DEVICE_ROOT,
+) -> bool:
+    """Tell the phone this capture is safely on a computer.
+
+    Recording all day produces dozens of takes, and the only way to know which are still the sole
+    copy is to write the answer where the phone can read it. The app shows a filled dot per take
+    from exactly this file, so without it the interface promises a distinction it cannot make.
+
+    Written after the pull has been verified, never before: a sentinel that arrives first would
+    mark a capture safe that is not.
+    """
+    payload = json.dumps(
+        {"host": host, "copied_at": when, "tool": "gausscapture pull"}, indent=2
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+        handle.write(payload)
+        local = Path(handle.name)
+    try:
+        result = _adb(
+            ["push", str(local), f"{root}/{capture.name}/{OFFLOAD_SENTINEL}"],
+            adb, serial, timeout=120,
+        )
+        return result.returncode == 0
+    finally:
+        local.unlink(missing_ok=True)
 
 
 def _size(count: int) -> str:

@@ -386,10 +386,14 @@ def _cmd_import(args, progress) -> int:
 
 def _cmd_pull(args, progress) -> int:
     """Import every capture the phone has that this machine does not."""
+    import socket
+    from datetime import datetime, timezone
+
     from gausscapture.ingest.pull import (
         devices,
         known_session_ids,
         list_captures,
+        mark_offloaded,
         pull_capture,
     )
     from gausscapture.pack import archive
@@ -454,7 +458,21 @@ def _cmd_pull(args, progress) -> int:
         archive.write_checksums(project.path / "capturepack", progress)
         store.update(project.id, status=STATUS_IMPORTED,
                      last_step=f"Pulled from {serial}")
-        imported.append({"capture": capture.name, "project": project.id})
+
+        # Only now, with the files verified and checksummed, is it true that this capture exists
+        # somewhere other than the phone. The app reads this to show which takes are still the
+        # only copy, so writing it any earlier would mark something safe that is not.
+        marked = mark_offloaded(
+            capture,
+            host=socket.gethostname(),
+            when=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            adb=args.adb,
+            serial=serial,
+        )
+        if not marked:
+            progress.log(f"  {capture.name}: copied, but the phone could not be marked")
+        imported.append({"capture": capture.name, "project": project.id,
+                         "marked_on_phone": marked})
 
     progress.update(100, "done")
     return _emit(
