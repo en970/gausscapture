@@ -67,6 +67,47 @@ void main() {
     });
   });
 
+  group('Exposure policy', () {
+    Take withExposure(Map<String, dynamic> exposure) => Take(
+          name: 'A_good_20260804_090000',
+          path: '/tmp/x',
+          bytes: 0,
+          offloaded: false,
+          incomplete: false,
+          manifest: {
+            'capture_settings': {'exposure': exposure},
+          },
+        );
+
+    test('reports the smear the chosen exposure admits', () {
+      // 1/120 s at 1350 px and 0.35 rad/s is about 1.6 px -- under the warning threshold, which
+      // is the whole point of capping.
+      final take = withExposure({
+        'policy': 'manual_capped',
+        'exposure_ns': 8333333,
+        'blur_px_at_0p35_rad_s': 1.575,
+      });
+      expect(take.exposurePolicy, 'manual_capped');
+      expect(take.blurAtNormalPace, closeTo(1.575, 0.001));
+      expect(take.exposureNs, 8333333);
+    });
+
+    test('a device with no manual control says so rather than implying a cap held', () {
+      final take = withExposure({'policy': 'auto_locked', 'exposure_ns': null});
+      expect(take.exposurePolicy, 'auto_locked');
+      expect(take.exposureNs, isNull);
+    });
+
+    test('an older manifest without the field degrades to unknown', () {
+      const take = Take(
+        name: 'x', path: '/tmp/x', bytes: 0, offloaded: false, incomplete: false,
+        manifest: {},
+      );
+      expect(take.exposurePolicy, 'unknown');
+      expect(take.blurAtNormalPace, isNull);
+    });
+  });
+
   group('CaptureStatus', () {
     test('an empty map yields safe defaults', () {
       const status = CaptureStatus();

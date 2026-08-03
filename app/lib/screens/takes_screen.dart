@@ -342,6 +342,13 @@ class _TakeDetail extends StatelessWidget {
                 take.droppedImu == 0 ? 'none' : '${take.droppedImu} dropped'),
             _check('Video anchored', take.firstFrameNs != null,
                 take.firstFrameNs != null ? 'first frame stamped' : 'ordinal only'),
+            _check(
+              'Motion blur bounded',
+              (take.blurAtNormalPace ?? 99) < 2.0,
+              take.blurAtNormalPace == null
+                  ? take.exposurePolicy
+                  : '${take.blurAtNormalPace!.toStringAsFixed(1)} px at a normal pace',
+            ),
             _check('Copied to a computer', take.offloaded,
                 take.offloaded ? 'yes' : 'not yet'),
 

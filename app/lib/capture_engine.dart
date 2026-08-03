@@ -267,6 +267,19 @@ class Take {
   int? get firstFrameNs =>
       (manifest?['clocks']?['first_encoded_frame_t_ns'] as num?)?.toInt();
 
+  /// How exposure was decided. `manual_capped` means blur was bounded; `auto_locked` means the
+  /// device offered no manual control and the smear is whatever the light dictated.
+  String get exposurePolicy =>
+      manifest?['capture_settings']?['exposure']?['policy'] as String? ?? 'unknown';
+
+  /// Predicted smear at a normal orbit rate, in pixels. The number the whole exposure policy
+  /// exists to hold down.
+  double? get blurAtNormalPace =>
+      (manifest?['capture_settings']?['exposure']?['blur_px_at_0p35_rad_s'] as num?)?.toDouble();
+
+  int? get exposureNs =>
+      (manifest?['capture_settings']?['exposure']?['exposure_ns'] as num?)?.toInt();
+
   double get seconds {
     final fps = (manifest?['video']?['fps'] as num?)?.toDouble() ?? 30;
     return fps > 0 ? frames / fps : 0;

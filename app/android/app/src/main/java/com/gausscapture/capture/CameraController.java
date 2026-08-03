@@ -69,6 +69,29 @@ public final class CameraController {
     /** Generous: compression artefacts are a confound we would rather not introduce. */
     private static final int VIDEO_BITRATE = 24_000_000;
 
+    /**
+     * The longest exposure a take is allowed to use, one 120th of a second.
+     *
+     * <p>Auto-exposure optimises for a pleasant-looking image, which indoors means roughly 1/30 s.
+     * Walking an orbit at a normal pace is about 0.35 radians per second, and at the focal length
+     * this phone reports -- near 1350 pixels -- that is {@code 0.35 * 0.033 * 1350}, or about 22
+     * pixels of smear. The motion warning would fire on every indoor take and be right to.
+     *
+     * <p>Capping exposure and letting sensitivity take up the slack trades noise for sharpness,
+     * which is the correct direction here: feature matching survives grain far better than it
+     * survives smeared corners, and a reconstruction is built out of corners.
+     */
+    private static final long MAX_EXPOSURE_NS = 8_333_333L;
+
+    /**
+     * How far sensitivity may be pushed to pay for the shorter exposure.
+     *
+     * <p>Past this, noise starts costing more matches than the smear it bought back, so the
+     * exposure is allowed to lengthen again rather than producing an unusable image. When that
+     * happens the manifest says so instead of implying the cap held.
+     */
+    private static final int MAX_COMPENSATING_ISO = 3200;
+
     private final Context context;
     private final TextureView view;
     private final CameraManager manager;
@@ -425,17 +448,122 @@ public final class CameraController {
         }
 
         if (lock) {
-            b.set(CaptureRequest.CONTROL_AE_LOCK, true);
             b.set(CaptureRequest.CONTROL_AWB_LOCK, true);
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
             if (lockedFocusDistance != null) {
                 b.set(CaptureRequest.LENS_FOCUS_DISTANCE, lockedFocusDistance);
+            }
+            if (!applyExposureCap(b)) {
+                // No manual control, so the best available is to freeze whatever auto-exposure
+                // converged on during the preview. Better than letting it drift mid-take, but it
+                // does not bound the smear.
+                b.set(CaptureRequest.CONTROL_AE_LOCK, true);
             }
         } else {
             b.set(CaptureRequest.CONTROL_AE_LOCK, false);
             b.set(CaptureRequest.CONTROL_AWB_LOCK, false);
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
         }
+    }
+
+    /** What the exposure cap settled on, for the manifest. Null until a take has started. */
+    private Long cappedExposureNs;
+    private Integer cappedIso;
+    private String exposurePolicy = "auto_locked";
+
+    /**
+     * Bound motion blur by taking manual control of exposure.
+     *
+     * <p>The preview has been running with auto-exposure, so its last converged values are a
+     * measurement of the actual light. Those are the starting point: exposure is clipped to the
+     * cap and sensitivity is scaled by exactly the factor that was removed, which keeps total
+     * light the same until sensitivity runs out of room.
+     *
+     * @return false when this device offers no manual control, so the caller can fall back.
+     */
+    private boolean applyExposureCap(CaptureRequest.Builder b) {
+        int[] capabilities =
+                characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
+        boolean manual = false;
+        if (capabilities != null) {
+            for (int capability : capabilities) {
+                if (capability
+                        == CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) {
+                    manual = true;
+                    break;
+                }
+            }
+        }
+        Range<Long> exposureRange =
+                characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+        Range<Integer> isoRange =
+                characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+        if (!manual || exposureRange == null || isoRange == null) {
+            exposurePolicy = "auto_locked";
+            return false;
+        }
+
+        long observed = lastExposureNanos > 0 ? lastExposureNanos : MAX_EXPOSURE_NS;
+        int observedIso = lastIso > 0 ? lastIso : isoRange.getLower();
+
+        if (observed <= MAX_EXPOSURE_NS) {
+            // Already short enough; freeze it where it is rather than changing anything.
+            cappedExposureNs = clamp(observed, exposureRange);
+            cappedIso = clamp(observedIso, isoRange);
+            exposurePolicy = "manual_unchanged";
+        } else {
+            double shortenedBy = observed / (double) MAX_EXPOSURE_NS;
+            int wanted = (int) Math.round(observedIso * shortenedBy);
+            int ceiling = Math.min(MAX_COMPENSATING_ISO, isoRange.getUpper());
+
+            if (wanted <= ceiling) {
+                cappedExposureNs = clamp(MAX_EXPOSURE_NS, exposureRange);
+                cappedIso = clamp(wanted, isoRange);
+                exposurePolicy = "manual_capped";
+            } else {
+                // Sensitivity cannot pay for the whole reduction. Spend what it can and let the
+                // exposure sit at whatever that affords -- a darker frame is recoverable, and an
+                // absurdly noisy one is not.
+                cappedIso = clamp(ceiling, isoRange);
+                long affordable = (long) (observed * (observedIso / (double) ceiling));
+                cappedExposureNs = clamp(affordable, exposureRange);
+                exposurePolicy = "manual_iso_limited";
+            }
+        }
+
+        b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF);
+        b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, cappedExposureNs);
+        b.set(CaptureRequest.SENSOR_SENSITIVITY, cappedIso);
+        // Frame duration has to leave room for the exposure, or the HAL quietly lengthens one of
+        // the two and the request no longer describes what is recorded.
+        b.set(CaptureRequest.SENSOR_FRAME_DURATION,
+                Math.max(1_000_000_000L / TARGET_FPS, cappedExposureNs));
+        return true;
+    }
+
+    private static long clamp(long value, Range<Long> range) {
+        return Math.max(range.getLower(), Math.min(range.getUpper(), value));
+    }
+
+    private static int clamp(int value, Range<Integer> range) {
+        return Math.max(range.getLower(), Math.min(range.getUpper(), value));
+    }
+
+    /** What the exposure policy decided, so the manifest records it rather than assuming it. */
+    public JSONObject exposureSettings() throws org.json.JSONException {
+        JSONObject json = new JSONObject();
+        json.put("policy", exposurePolicy);
+        json.put("max_exposure_ns", MAX_EXPOSURE_NS);
+        json.put("exposure_ns", cappedExposureNs == null ? JSONObject.NULL : cappedExposureNs);
+        json.put("iso", cappedIso == null ? JSONObject.NULL : cappedIso);
+        // The smear this policy admits at a normal orbit rate, stated so a capture can be judged
+        // without redoing the arithmetic.
+        float focal = focalPixels();
+        if (focal > 0 && cappedExposureNs != null) {
+            json.put("blur_px_at_0p35_rad_s",
+                    0.35f * (cappedExposureNs / 1_000_000_000f) * focal);
+        }
+        return json;
     }
 
     /** Records what the camera actually did, per frame, rather than what we asked for. */

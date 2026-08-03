@@ -316,6 +316,7 @@ public final class CaptureEngine {
             settings.put("focus_lock_requested", true);
             settings.put("stabilisation_disable_requested", true);
             settings.put("verified_per_frame_in", "frames.jsonl");
+            settings.put("exposure", camera.exposureSettings());
             settings.put("storage_mode", storage.isVisibleToDesktop() ? "shared" : "app_private");
             settings.put("storage_path", storage.describePath());
             manifest.put("capture_settings", settings);
