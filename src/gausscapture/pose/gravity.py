@@ -171,7 +171,9 @@ def up_from_gravity(project_dir: Path, model_dir: Path) -> GravityUp | None:
     def score(candidate: np.ndarray) -> tuple[float, np.ndarray]:
         # The accelerometer measures specific force, so a resting phone reads
         # *upward* -- the vector is already up, with no sign to flip.
-        world = np.array([r @ (candidate @ d) for r, d in zip(rotations, directions)])
+        world = np.array(
+            [r @ (candidate @ d) for r, d in zip(rotations, directions, strict=True)]
+        )
         mean = world.mean(axis=0)
         length = float(np.linalg.norm(mean))
         return length, (mean / length if length else mean)
@@ -215,7 +217,7 @@ def _axis_rotations() -> list[np.ndarray]:
     for permutation in itertools.permutations(range(3)):
         for signs in itertools.product((1, -1), repeat=3):
             matrix = np.zeros((3, 3))
-            for row, (column, sign) in enumerate(zip(permutation, signs)):
+            for row, (column, sign) in enumerate(zip(permutation, signs, strict=True)):
                 matrix[row, column] = sign
             if np.isclose(np.linalg.det(matrix), 1.0):  # reflections are not poses
                 out.append(matrix)

@@ -21,6 +21,7 @@ on disk, so running the command again simply resumes.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -237,10 +238,8 @@ def pull_capture(
         if created_parent:
             # A failed pull should not leave a directory that later reads as an
             # imported capture.
-            try:
+            with contextlib.suppress(OSError):
                 destination.parent.rmdir()
-            except OSError:
-                pass
 
 
 def mark_offloaded(
