@@ -224,6 +224,88 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8900)
     p.add_argument("--json", action="store_true")
 
+    # ---- the fixed-camera 4D path -------------------------------------------
+    # A stationary camera produces no parallax, so these commands never claim a
+    # free-viewpoint scene. They produce a bullet-time scene bounded by the cone
+    # the hand-held arc actually swept, and every one of them reports what was
+    # measured rather than what was hoped for.
+
+    # mask ---------------------------------------------------------------------
+    p = add("mask", "Measure the dynamic region of a fixed-camera capture.", _cmd_mask)
+    p.add_argument("project")
+    p.add_argument("--json", action="store_true")
+
+    # prep4d -------------------------------------------------------------------
+    p = add("prep4d", "Prepare a 4D scene for training: mask, poses, cone, canonical init.",
+            _cmd_prep4d)
+    p.add_argument("project")
+    p.add_argument("--nodes", type=int, default=256,
+                   help="SE(3) scaffold nodes seeded over the dynamic region")
+    p.add_argument("--skin-k", type=int, default=4,
+                   help="Scaffold nodes each dynamic gaussian is bound to")
+    p.add_argument("--cap-max", type=int, default=400_000,
+                   help="Gaussian budget the trainer will be capped at")
+    p.add_argument("--json", action="store_true")
+
+    # colab4d ------------------------------------------------------------------
+    p = add("colab4d", "Package dataset4d.zip for a cloud GPU, or collect the trained scene.",
+            _cmd_colab4d)
+    p.add_argument("project")
+    p.add_argument("--out", type=Path, help="Destination archive (defaults to the project)")
+    p.add_argument("--collect", type=Path, metavar="SCENE4D_NPZ",
+                   help="Adopt a scene4d.npz trained elsewhere instead of packaging")
+    p.add_argument("--coarse-iters", type=int, default=3000,
+                   help="Recorded in the package so the GPU host needs no flags")
+    p.add_argument("--iters", type=int, default=12_000)
+    p.add_argument("--cap-max", type=int, default=400_000)
+    p.add_argument("--json", action="store_true")
+
+    # train4d ------------------------------------------------------------------
+    p = add("train4d", "Train the deformable 4D scene. Needs torch; a CUDA GPU to be useful.",
+            _cmd_train4d)
+    p.add_argument("target", help="Project id or path, or a dataset4d.zip")
+    p.add_argument("--out", type=Path, help="Where to write scene4d.npz")
+    p.add_argument("--coarse-iters", type=int, default=3000,
+                   help="Static stage: deformation forced to identity, MCMC densifies")
+    p.add_argument("--iters", type=int, default=12_000,
+                   help="Deformable stage: densification off, position noise driven to zero")
+    p.add_argument("--cap-max", type=int, default=400_000)
+    p.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
+    p.add_argument("--field", default="explicit", choices=["explicit", "kplanes"],
+                   help="Motion parameterisation: free per-node keyframes, or the "
+                        "multi-resolution K-Planes field that predicts them")
+    p.add_argument("--checkpoint-every", type=int, default=1000, metavar="STEPS",
+                   help="Write a resumable checkpoint beside the output; 0 disables it")
+    p.add_argument("--resume", action="store_true",
+                   help="Continue from that checkpoint instead of starting over")
+    p.add_argument("--json", action="store_true")
+
+    # export4d -----------------------------------------------------------------
+    p = add("export4d", "Write a .g4d bullet-time scene from a trained 4D model.", _cmd_export4d)
+    p.add_argument("target", help="Project id or path, or a scene4d.npz")
+    p.add_argument("--out", type=Path, help="Destination .g4d")
+    p.add_argument("--skin-k", type=int, default=4)
+    p.add_argument("--min-opacity", type=float, default=0.02,
+                   help="Drop gaussians fainter than this")
+    p.add_argument("--max-gaussians", type=int, default=None,
+                   help="Cap the count, keeping the most significant of each group")
+    p.add_argument("--json", action="store_true")
+
+    # viewer4d -----------------------------------------------------------------
+    p = add("viewer4d", "Build the browser bullet-time viewer for a .g4d scene.", _cmd_viewer4d)
+    p.add_argument("target", help="Project id or path, or a scene.g4d")
+    p.add_argument("--out", type=Path, help="Output directory")
+    p.add_argument("--single-file", action="store_true",
+                   help="Inline everything into one .html")
+    p.add_argument("--cone-azimuth", type=float, default=None,
+                   help="Narrow the published azimuth half-angle; it can never widen "
+                        "the cone that was measured")
+    p.add_argument("--cone-elevation", type=float, default=None,
+                   help="Narrow the published elevation half-angle")
+    p.add_argument("--serve", action="store_true")
+    p.add_argument("--port", type=int, default=8900)
+    p.add_argument("--json", action="store_true")
+
     # run --------------------------------------------------------------------
     p = add("run", "Run telemetry, frames, pose, and dataset in one pass.", _cmd_run)
     p.add_argument("project")
@@ -263,6 +345,48 @@ def _emit(data: Any, as_json: bool, human: str | None = None) -> int:
     return 0
 
 
+def _project_or_file(reference: str, suffixes: tuple[str, ...]) -> tuple[Path | None, Path | None]:
+    """Resolve an argument that may name a project or a bare artefact.
+
+    The 4D commands accept both because training happens on someone else's
+    machine: what comes back is a file, and being made to import it into a
+    project before it can be looked at would be a step that exists only to
+    satisfy the tool.
+    """
+    candidate = Path(reference).expanduser()
+    if candidate.suffix.lower() in suffixes:
+        if not candidate.exists():
+            raise GaussCaptureError(f"No such file: {candidate}")
+        return None, candidate
+    return _resolve_project(reference), None
+
+
+def _require_frames(project_path: Path) -> None:
+    """Refuse a step whose pixels do not exist yet."""
+    from gausscapture.errors import PipelineStateError
+
+    images = project_path / "frames" / "images"
+    if not images.is_dir() or not any(images.iterdir()):
+        raise PipelineStateError(
+            f"No extracted frames in {images}. Run `gausscapture frames <project>` first."
+        )
+
+
+def _set_status(project_path: Path, status: str, step: str) -> None:
+    """Record a stage on a project, tolerating one addressed by bare path.
+
+    ``_resolve_project`` accepts a directory anywhere on disk, and such a
+    directory has no entry in the store, so a status write is a courtesy rather
+    than a contract. The artefacts on disk are what the pipeline reads back.
+    """
+    import contextlib
+
+    from gausscapture.project import ProjectStore
+
+    with contextlib.suppress(FileNotFoundError):
+        ProjectStore().update(project_path.name, status=status, last_step=step)
+
+
 # --------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------
@@ -270,7 +394,7 @@ def _emit(data: Any, as_json: bool, human: str | None = None) -> int:
 
 def _cmd_doctor(args, progress) -> int:
     from gausscapture.pose.colmap import colmap_available
-    from gausscapture.recon.external import trainer_status
+    from gausscapture.recon.external import deform_trainer_status, trainer_status
 
     settings = get_settings()
     checks = {
@@ -280,13 +404,19 @@ def _cmd_doctor(args, progress) -> int:
         "opencv": _importable("cv2"),
         "numpy": _importable("numpy"),
         "open3d (optional)": _importable("open3d"),
+        # Exact k-nearest-neighbour scale initialisation uses cKDTree above
+        # 20k points; below that a NumPy brute force covers it, which is why
+        # this is optional rather than a dependency.
+        "scipy (optional, 4D)": _importable("scipy"),
     }
     trainer = trainer_status(settings)
+    fourd = deform_trainer_status(probe_cuda=True)
     report = {
         "version": __version__,
         "projects_dir": settings.projects_dir,
         "checks": checks,
         "trainer": trainer,
+        "fourd_trainer": fourd,
     }
     if args.json:
         return _emit(report, True)
@@ -302,6 +432,22 @@ def _cmd_doctor(args, progress) -> int:
         print(f"  MISS  trainer configured but unusable: {trainer['path']}")
     else:
         print("  --    no trainer configured (use `gausscapture colab` for cloud training)")
+
+    # The 4D row says what this machine can do, not what the pipeline needs, so
+    # a laptop with no CUDA reads as "prepare and export here, train elsewhere"
+    # rather than as a broken install.
+    mark = "ok  " if fourd["gpu_usable"] else ("--  " if fourd["usable"] else "--  ")
+    versions = ", ".join(
+        name
+        for name, present in (
+            (f"torch {fourd['torch_version']}".strip(), fourd["torch"]),
+            ("gsplat", fourd["gsplat"]),
+            ("cuda", bool(fourd["cuda"])),
+        )
+        if present
+    )
+    print(f"  {mark}  4D training: {versions or 'not available here'}")
+    print(f"        {fourd['note']}")
 
     if not checks["ffmpeg"]:
         print("\nInstall ffmpeg:  brew install ffmpeg")
@@ -335,7 +481,14 @@ def _cmd_project(args, progress) -> int:
         raise GaussCaptureError(f"A project id is required: `project {args.action} <id>`")
 
     if args.action == "show":
-        return _emit(store.get(args.value).to_dict(), True)
+        project = store.get(args.value)
+        payload = project.to_dict()
+        # Only for projects that have started down the 4D path, so a static
+        # project's output does not grow a block of nulls it will never fill.
+        state = project.fourd_state()
+        if state.is_fourd:
+            payload["fourd"] = state.to_dict()
+        return _emit(payload, True)
 
     store.delete(args.value)
     return _emit({"deleted": args.value}, args.json, f"deleted {args.value}")
@@ -724,22 +877,7 @@ def _cmd_report(args, progress) -> int:
 
     if not args.serve:
         return _emit(payload, args.json, f"{index}\n  open it directly, or add --serve")
-
-    # A module page is fetched, and fetch() is blocked on file:// URLs, so the
-    # report needs a server even though nothing about it is dynamic.
-    import functools
-    import http.server
-    import socketserver
-
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out_dir))
-    with socketserver.TCPServer(("127.0.0.1", args.port), handler) as server:
-        url = f"http://127.0.0.1:{args.port}/"
-        print(f"{url}\n  serving {out_dir}\n  ctrl-c to stop")
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            print("stopped")
-    return 0
+    return _serve_directory(out_dir, args.port, [f"  serving {out_dir}"])
 
 
 def _cmd_viewer(args, progress) -> int:
@@ -761,25 +899,383 @@ def _cmd_viewer(args, progress) -> int:
                     "bytes": s["bytes"]} for s in scenes],
     }
 
+    lines = [
+        f"  {s['label']}: {s['count']:,} gaussians, {s['bytes'] / 1e6:.1f} MB" for s in scenes
+    ]
     if not args.serve:
-        human = "\n".join(
-            f"  {s['label']}: {s['count']:,} gaussians, {s['bytes'] / 1e6:.1f} MB"
-            for s in scenes
-        )
-        return _emit(payload, args.json, f"{index}\n{human}\n  add --serve to open it")
+        return _emit(payload, args.json, "\n".join([str(index), *lines, "  add --serve to open it"]))
+    return _serve_directory(out_dir, args.port, lines)
 
-    # A module page fetches its data, and fetch() is blocked on file:// URLs,
-    # so even a wholly static viewer needs a server.
+
+def _cmd_mask(args, progress) -> int:
+    from gausscapture.project import MASKS_SUBDIR, STATUS_MASKED, record_fourd_stage
+
+    project_path = _resolve_project(args.project)
+    _require_frames(project_path)
+
+    from gausscapture.ingest.phases import phase_split_for_pack
+    from gausscapture.recon.dynamic_mask import build_dynamic_masks
+
+    split = phase_split_for_pack(project_path / "capturepack")
+    hold = split.require("hold")
+    hold_paths = _frames_in_range(project_path, hold.start_frame, hold.end_frame)
+    rest_window = split.rest_window
+    rest_paths = (
+        _frames_in_range(project_path, rest_window[0], rest_window[1]) if rest_window else []
+    )
+
+    report, _union = build_dynamic_masks(
+        hold_paths,
+        project_path / MASKS_SUBDIR,
+        rest_paths=rest_paths,
+        progress=progress,
+    )
+    payload = report.to_dict()
+    payload["phases"] = split.to_dict()
+
+    record_fourd_stage(
+        project_path,
+        "masked",
+        dynamic_fraction=report.union_fraction,
+        mask_threshold_levels=report.threshold_levels,
+        noise_source=report.noise_source,
+    )
+    _set_status(project_path, STATUS_MASKED, "Dynamic region measured")
+
+    if args.json:
+        return _emit(payload, True)
+
+    print(f"{report.frames} masks in {report.masks_dir}")
+    print(
+        f"  {report.union_fraction:.1%} of the frame moves at some point; "
+        f"threshold {report.threshold_levels:.1f} grey levels "
+        f"from the {report.noise_source} noise floor"
+    )
+    for warning in [*split.warnings, *report.warnings]:
+        print(f"  warning: {warning}")
+    return 0
+
+
+def _frames_in_range(project_path: Path, first: int, last: int) -> list[Path]:
+    """Extracted images whose source frame number falls inside a phase.
+
+    The frame index records the source frame number of every image it kept, so
+    a phase measured on the video maps onto files on disk without re-decoding
+    anything.
+    """
+    from gausscapture.errors import PipelineStateError
+
+    index_path = project_path / "frames" / "frame_index.json"
+    if not index_path.exists():
+        raise PipelineStateError(
+            f"No frame index at {index_path}. Run `gausscapture frames <project>` first."
+        )
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    # ``file`` is recorded relative to the project root, not to frames/.
+    paths = [
+        project_path / record["file"]
+        for record in index.get("frames", [])
+        if record.get("used") and first <= record["index"] <= last and record.get("file")
+    ]
+    return [p for p in paths if p.exists()]
+
+
+def _cmd_prep4d(args, progress) -> int:
+    from gausscapture.project import STATUS_PREPARED_4D, record_fourd_stage
+
+    project_path = _resolve_project(args.project)
+    _require_frames(project_path)
+
+    from gausscapture.recon.prepare4d import prepare_4d
+
+    result = prepare_4d(
+        project_path,
+        nodes=args.nodes,
+        skin_k=args.skin_k,
+        cap_max=args.cap_max,
+        progress=progress,
+    )
+    cone = result.get("cone", {}) or {}
+    fixed = result.get("fixed_pose", {}) or {}
+    record_fourd_stage(
+        project_path,
+        "prepared",
+        init=result.get("init_path"),
+        cone=cone,
+        fixed_pose=fixed,
+        gaussians=result.get("gaussians"),
+        dynamic_gaussians=result.get("dynamic_gaussians"),
+        nodes=result.get("nodes"),
+    )
+    _set_status(project_path, STATUS_PREPARED_4D, "4D scene prepared")
+
+    if args.json:
+        return _emit(result, True)
+
+    print(
+        f"init:  {result.get('init_path')}\n"
+        f"  {result.get('gaussians', 0):,} gaussians "
+        f"({result.get('dynamic_gaussians', 0):,} dynamic), "
+        f"{result.get('nodes', 0)} scaffold nodes"
+    )
+    # The keys are ConeReport's own: half-angles, because a cone that reported a
+    # full angle under the same name as a half one would be wrong by a factor of
+    # two in the one number the viewer clamps to.
+    print(
+        f"  cone: +/-{cone.get('azimuth_half_deg', 0.0):.1f} deg azimuth "
+        f"x +/-{cone.get('elevation_half_deg', 0.0):.1f} deg elevation, "
+        f"measured from {cone.get('cameras', 0)} arc cameras"
+    )
+    source = fixed.get("source", "unknown")
+    residual = fixed.get("residual_px")
+    if source == "asserted":
+        # Tier 3 is the quiet failure mode: the pipeline completes, and nothing
+        # about the result says the camera pose was never checked against the
+        # scene. It is said here, and again in the viewer.
+        print(
+            "  pose: ASSERTED, not verified -- the masked hold keyframes did not register, "
+            "so the fixed pose is inherited and unchecked"
+        )
+    elif residual is None:
+        # No residual means nothing was compared, not that nothing disagreed.
+        print(f"  pose: {source}, no pixel-space comparison was possible")
+    else:
+        print(f"  pose: {source}, residual {float(residual):.1f} px")
+    for warning in result.get("warnings", []):
+        print(f"  warning: {warning}")
+    return 0
+
+
+def _cmd_colab4d(args, progress) -> int:
+    from gausscapture.export.colab4d import collect_trained_scene, create_colab4d_package
+    from gausscapture.project import STATUS_PACKAGED_4D, STATUS_TRAINED_4D
+
+    project_path = _resolve_project(args.project)
+
+    if args.collect is not None:
+        result = collect_trained_scene(project_path, args.collect)
+        _set_status(project_path, STATUS_TRAINED_4D, "Collected a trained 4D scene")
+        return _emit(
+            result,
+            args.json,
+            f"{result['scene']}  ({result['size_bytes'] / 1e6:.1f} MB)\n"
+            f"  export it with `gausscapture export4d {args.project}`",
+        )
+
+    result = create_colab4d_package(
+        project_path,
+        out=args.out,
+        training_config={
+            "coarse_iters": args.coarse_iters,
+            "iters": args.iters,
+            "cap_max": args.cap_max,
+        },
+        progress=progress,
+    )
+    _set_status(project_path, STATUS_PACKAGED_4D, "Packaged for GPU training")
+    human = (
+        f"{result['dataset_zip']}  ({result['size_bytes'] / 1e6:.1f} MB, "
+        f"{result['images']} frames)\n"
+        "  train it with notebooks/GaussCapture_Colab_4D.ipynb, then bring it back:\n"
+        f"  gausscapture colab4d {args.project} --collect scene4d.npz"
+    )
+    return _emit(result, args.json, human)
+
+
+def _cmd_train4d(args, progress) -> int:
+    from gausscapture.errors import DependencyMissingError
+    from gausscapture.project import (
+        SCENE4D_RELPATH,
+        STATUS_TRAINED_4D,
+        FourDState,
+        record_fourd_stage,
+    )
+    from gausscapture.recon.external import deform_trainer_status
+
+    project_path, dataset_zip = _project_or_file(args.target, (".zip",))
+    if project_path is not None:
+        state = FourDState.observe(project_path)
+        state.require("packaged", "Package it first: `gausscapture colab4d <project>`.")
+        dataset_zip = state.dataset_zip
+    assert dataset_zip is not None
+
+    out = args.out or (
+        project_path / SCENE4D_RELPATH if project_path else dataset_zip.with_name("scene4d.npz")
+    )
+
+    # Checked before the trainer is imported, so a machine without the extra
+    # gets the sentence that tells it what to do instead of an ImportError.
+    status = deform_trainer_status(probe_cuda=False)
+    if not status["usable"]:
+        raise DependencyMissingError(status["note"])
+    if args.device == "cuda" and not status["gsplat"]:
+        raise DependencyMissingError(
+            "gsplat is not installed, and the CPU reference rasterizer is a correctness "
+            "check rather than a trainer. Install `gausscapture[train4d]`, or package the "
+            "scene with `gausscapture colab4d` and train on a cloud GPU."
+        )
+
+    from gausscapture.recon.fit4d import train_4d
+
+    summary = train_4d(
+        dataset_zip,
+        Path(out),
+        coarse_iters=args.coarse_iters,
+        iters=args.iters,
+        cap_max=args.cap_max,
+        device=args.device,
+        field_kind=args.field,
+        checkpoint_every=args.checkpoint_every,
+        resume=args.resume,
+        progress=progress,
+    )
+    if project_path is not None:
+        record_fourd_stage(
+            project_path,
+            "trained",
+            scene4d=str(out),
+            iterations=args.coarse_iters + args.iters,
+            device=args.device,
+            holdout_psnr_db=summary.get("holdout_psnr_db"),
+        )
+        _set_status(project_path, STATUS_TRAINED_4D, "4D training complete")
+
+    if args.json:
+        return _emit(summary, True)
+
+    print(f"{out}  ({Path(out).stat().st_size / 1e6:.1f} MB)")
+    print(
+        f"  {summary.get('gaussians', 0):,} gaussians, {summary.get('nodes', 0)} nodes, "
+        f"{summary.get('frames', 0)} frames"
+    )
+    if summary.get("holdout_psnr_db") is not None:
+        # D9: there is no held-out viewpoint anywhere in this design, so this
+        # number must never be read as novel-view synthesis quality.
+        print(
+            f"  temporal hold-out PSNR {summary['holdout_psnr_db']:.1f} dB "
+            "-- motion interpolation only, not novel view"
+        )
+    return 0
+
+
+def _cmd_export4d(args, progress) -> int:
+    from gausscapture.project import (
+        SCENE4D_G4D_RELPATH,
+        STATUS_EXPORTED_4D,
+        FourDState,
+        record_fourd_stage,
+    )
+
+    project_path, scene_npz = _project_or_file(args.target, (".npz",))
+    if project_path is not None:
+        state = FourDState.observe(project_path)
+        state.require(
+            "trained",
+            "Train it first, or adopt a scene trained elsewhere with "
+            "`gausscapture colab4d <project> --collect scene4d.npz`.",
+        )
+        scene_npz = state.scene_path
+    assert scene_npz is not None
+
+    out = args.out or (
+        project_path / SCENE4D_G4D_RELPATH if project_path else scene_npz.with_suffix(".g4d")
+    )
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+
+    from gausscapture.export.checkpoint4d import export_scene4d
+
+    result = export_scene4d(
+        scene_npz,
+        Path(out),
+        skin_k=args.skin_k,
+        min_opacity=args.min_opacity,
+        max_gaussians=args.max_gaussians,
+        progress=progress,
+    )
+    if project_path is not None:
+        record_fourd_stage(project_path, "exported", g4d=str(out),
+                           g4d_bytes=result["size_bytes"])
+        _set_status(project_path, STATUS_EXPORTED_4D, "4D scene exported")
+
+    if args.json:
+        return _emit(result, True)
+
+    print(f"{result['path']}  ({result['size_bytes'] / 1e6:.1f} MB, "
+          f"{result['bytes_per_gaussian']:.1f} bytes/gaussian)")
+    print(
+        f"  {result['gaussian_count']:,} gaussians ({result['dynamic_count']:,} dynamic), "
+        f"{result['node_count']} nodes x {result['frame_count']} frames "
+        f"at {result['fps']:g} fps"
+    )
+    if result["pruned_faint"]:
+        print(f"  dropped {result['pruned_faint']:,} gaussians below {args.min_opacity} opacity")
+    if result["truncated"]:
+        # A truncated scene is not the scene that was trained, so it is said
+        # here and again in the viewer rather than only in scene.json.
+        dropped = result["trained_gaussian_count"] - result["gaussian_count"]
+        print(f"  TRUNCATED to the budget: {dropped:,} more dropped in importance order")
+    return 0
+
+
+def _cmd_viewer4d(args, progress) -> int:
+    from gausscapture.project import VIEWER4D_RELPATH, FourDState
+
+    project_path, g4d_path = _project_or_file(args.target, (".g4d",))
+    if project_path is not None:
+        state = FourDState.observe(project_path)
+        state.require("exported", "Export it first: `gausscapture export4d <project>`.")
+        g4d_path = state.g4d_path
+    assert g4d_path is not None
+
+    out_dir = Path(
+        args.out
+        or (project_path / VIEWER4D_RELPATH if project_path else g4d_path.parent / "viewer4d")
+    )
+
+    from gausscapture.report.scene4d_site import build_scene4d_site
+
+    index = build_scene4d_site(
+        g4d_path,
+        out_dir,
+        single_file=args.single_file,
+        cone_azimuth_deg=args.cone_azimuth,
+        cone_elevation_deg=args.cone_elevation,
+    )
+    scene: dict[str, Any] = {}
+    scene_path = out_dir / "scene.json"
+    if scene_path.exists():
+        scene = json.loads(scene_path.read_text(encoding="utf-8"))
+
+    cone = scene.get("cone", {}) or {}
+    lines = [
+        f"  trained view: +/-{cone.get('azimuth_deg', 0.0):.1f} deg "
+        f"x +/-{cone.get('elevation_deg', 0.0):.1f} deg -- the viewer clamps to it",
+    ]
+    if scene.get("fixed_pose_source") == "asserted":
+        lines.append("  the fixed camera pose was asserted, not verified")
+    payload = {"viewer": str(index), "directory": str(out_dir), "scene": scene}
+
+    if not args.serve:
+        return _emit(payload, args.json, "\n".join([str(index), *lines, "  add --serve to open it"]))
+    return _serve_directory(out_dir, args.port, lines)
+
+
+def _serve_directory(out_dir: Path, port: int, lines: list[str]) -> int:
+    """Serve a built site over HTTP.
+
+    A module page fetches its own data, and fetch() is blocked on file:// URLs,
+    so even a wholly static viewer needs a server.
+    """
     import functools
     import http.server
     import socketserver
 
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out_dir))
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("127.0.0.1", args.port), handler) as server:
-        print(f"http://127.0.0.1:{args.port}/")
-        for s in scenes:
-            print(f"  {s['label']}: {s['count']:,} gaussians, {s['bytes'] / 1e6:.1f} MB")
+    with socketserver.TCPServer(("127.0.0.1", port), handler) as server:
+        print(f"http://127.0.0.1:{port}/")
+        for line in lines:
+            print(line)
         print("  ctrl-c to stop")
         try:
             server.serve_forever()

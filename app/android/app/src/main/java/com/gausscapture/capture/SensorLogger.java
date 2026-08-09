@@ -24,14 +24,31 @@ import java.io.File;
  * (audit D10). Here the sensors get a dedicated high-priority thread, and the disk is somebody
  * else's problem ({@link JsonlWriter}).
  *
- * <p>Five sensors are registered rather than two. The calibrated accelerometer and gyroscope are
+ * <p>Six sensors are registered rather than two. The calibrated accelerometer and gyroscope are
  * what the pipeline reads today; the <em>uncalibrated</em> variants carry the raw signal alongside
  * the bias the system is subtracting, which is the only way a consumer can ever redo the
  * integration its own way; the rotation vector is the platform's own fused orientation and serves
- * as an independent check on anything derived from the others. None of it can be recovered after
- * the fact, and together they cost a few megabytes a minute.
+ * as an independent check on anything derived from the others; and the <em>game</em> rotation
+ * vector is the same estimate with the magnetometer left out, which is what makes it usable
+ * indoors next to a laptop, a desk lamp and a phone stand. None of it can be recovered after the
+ * fact, and together they cost a few megabytes a minute.
  */
 final class SensorLogger {
+
+    /**
+     * Where live guidance gets its samples, alongside the file.
+     *
+     * <p>The scripted protocol has to answer two questions <em>during</em> the take — is the phone
+     * at rest, and how far has the sweep gone — and both are the same samples that are being
+     * written to disk. Handing them to a sink here rather than re-reading the file keeps a single
+     * subscription to each sensor: registering a second listener for the interface would double
+     * the delivery cost of the most valuable stream in the project.
+     */
+    interface MotionSink {
+        void onGyro(long tNs, float x, float y, float z);
+        void onAccel(long tNs, float x, float y, float z);
+        void onRotation(float[] quaternion);
+    }
 
     /**
      * Rolling window for the angular-rate estimate, in samples.
@@ -42,8 +59,22 @@ final class SensorLogger {
      */
     private static final int RATE_WINDOW = 32;
 
+    /**
+     * Requested sampling period, in microseconds: 400 Hz.
+     *
+     * <p>{@code SENSOR_DELAY_FASTEST} asks for whatever the device will give and says nothing
+     * about batching, and batching is the problem. With a non-zero maximum report latency the
+     * platform is free to hold events in the hardware FIFO and deliver them in a burst, which is
+     * excellent for a step counter and fatal here: the rest detector would be reading the phone's
+     * state as it was a second ago, and would confirm rest for a phone that is currently in a
+     * hand. Asking for a period explicitly, with a latency of zero, is what makes the guidance
+     * live.
+     */
+    private static final int SAMPLE_PERIOD_US = 2500;
+
     private final SensorManager sensorManager;
     private final Clocks clocks;
+    private volatile MotionSink motionSink;
 
     private HandlerThread thread;
     private Handler handler;
@@ -134,8 +165,14 @@ final class SensorLogger {
         register(Sensor.TYPE_ACCELEROMETER);
         register(Sensor.TYPE_GYROSCOPE);
         register(Sensor.TYPE_ROTATION_VECTOR);
+        register(Sensor.TYPE_GAME_ROTATION_VECTOR);
         register(Sensor.TYPE_GYROSCOPE_UNCALIBRATED);
         register(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED);
+    }
+
+    /** Live guidance reads the same samples that are being written. Null unsubscribes. */
+    void setMotionSink(MotionSink sink) {
+        this.motionSink = sink;
     }
 
     private void register(int type) {
@@ -143,7 +180,7 @@ final class SensorLogger {
         if (sensor == null) {
             return;
         }
-        sensorManager.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_FASTEST, handler);
+        sensorManager.registerListener(listener, sensor, SAMPLE_PERIOD_US, 0, handler);
     }
 
     void stop() {
@@ -172,16 +209,40 @@ final class SensorLogger {
             // accumulated deep-sleep time since boot.
             clocks.observeSensorEvent(event.timestamp);
 
-            if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
-                float omega = (float) Math.sqrt(
-                        event.values[0] * event.values[0]
-                                + event.values[1] * event.values[1]
-                                + event.values[2] * event.values[2]);
-                rateWindow[rateIndex] = omega;
-                rateIndex = (rateIndex + 1) % RATE_WINDOW;
-                if (rateFilled < RATE_WINDOW) {
-                    rateFilled++;
+            MotionSink sink = motionSink;
+            switch (event.sensor.getType()) {
+                case Sensor.TYPE_GYROSCOPE: {
+                    float omega = (float) Math.sqrt(
+                            event.values[0] * event.values[0]
+                                    + event.values[1] * event.values[1]
+                                    + event.values[2] * event.values[2]);
+                    rateWindow[rateIndex] = omega;
+                    rateIndex = (rateIndex + 1) % RATE_WINDOW;
+                    if (rateFilled < RATE_WINDOW) {
+                        rateFilled++;
+                    }
+                    if (sink != null) {
+                        sink.onGyro(event.timestamp, event.values[0], event.values[1],
+                                event.values[2]);
+                    }
+                    break;
                 }
+                case Sensor.TYPE_ACCELEROMETER:
+                    if (sink != null) {
+                        sink.onAccel(event.timestamp, event.values[0], event.values[1],
+                                event.values[2]);
+                    }
+                    break;
+                case Sensor.TYPE_GAME_ROTATION_VECTOR:
+                    // The magnetometer-free orientation: no compass, so no indoor magnetic
+                    // disturbance, and gravity in device coordinates without low-passing the
+                    // accelerometer -- which is the only way an orbit can be told from a pivot.
+                    if (sink != null) {
+                        sink.onRotation(event.values);
+                    }
+                    break;
+                default:
+                    break;
             }
 
             // The absolute t_ns is the primary key -- it is what lets a frame find its sample --

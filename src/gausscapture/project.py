@@ -12,11 +12,12 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from gausscapture.config import Settings, get_settings
+from gausscapture.errors import PipelineStateError
 from gausscapture.util.log import utc_now
 
 STATUS_CREATED = "Created"
@@ -29,10 +30,23 @@ STATUS_PREVIEW = "Preview Ready"
 STATUS_EXPORTED = "Exported"
 STATUS_ERROR = "Error"
 
+# The fixed-camera 4D path runs alongside the static one rather than replacing
+# it: the same capture can yield a static splat and a bullet-time scene, so its
+# stages get their own labels instead of overloading "Trained".
+STATUS_MASKED = "Dynamic Region Measured"
+STATUS_PREPARED_4D = "Prepared (4D)"
+STATUS_PACKAGED_4D = "Packaged for GPU (4D)"
+STATUS_TRAINED_4D = "Trained (4D)"
+STATUS_EXPORTED_4D = "Exported (4D)"
+
 #: Subdirectories created for every project.
 SUBDIRS = (
     "capturepack",
     "frames",
+    # Dynamic-region masks. They are inputs to COLMAP and to the canonical
+    # dynamic/static split, not products of either, so they get their own home
+    # rather than living inside colmap/ or frames/.
+    "masks",
     "quality",
     "colmap",
     "dataset",
@@ -41,6 +55,178 @@ SUBDIRS = (
     "export",
     "logs",
 )
+
+# --------------------------------------------------------------------------
+# 4D layout
+#
+# Written down once, here, because five modules and the CLI all need to agree
+# on where a 4D project keeps its artefacts, and a layout that is spelled out
+# at each call site is a layout that drifts.
+# --------------------------------------------------------------------------
+
+MASKS_SUBDIR = "masks"
+SCENE4D_INIT_RELPATH = Path("training") / "scene4d_init.npz"
+DATASET4D_RELPATH = Path("colab_export") / "dataset4d.zip"
+SCENE4D_RELPATH = Path("training") / "scene4d.npz"
+SCENE4D_G4D_RELPATH = Path("export") / "scene.g4d"
+VIEWER4D_RELPATH = Path("export") / "viewer4d"
+FOURD_STATE_RELPATH = Path("training") / "fourd.json"
+
+#: The order 4D artefacts appear in. :meth:`FourDState.require` compares
+#: positions in this tuple, so it is the single written-down shape of the path.
+FOURD_STAGES = (
+    "none",
+    "masked",
+    "prepared",
+    "packaged",
+    "trained",
+    "exported",
+    "viewable",
+)
+
+#: What to run next from each stage. Reported by `project show` so a stalled
+#: project answers "what now" without anyone reading the roadmap.
+FOURD_NEXT_COMMAND = {
+    "none": "prep4d",
+    "masked": "prep4d",
+    "prepared": "colab4d",
+    "packaged": "train4d",
+    "trained": "export4d",
+    "exported": "viewer4d",
+    "viewable": None,
+}
+
+
+@dataclass
+class FourDState:
+    """What a 4D project has actually produced, read off the disk.
+
+    The stage is derived from the artefacts rather than from a status string
+    that a previous run wrote. That is deliberate: a project whose training
+    output was deleted to free space, or that was copied without its export
+    directory, has to report what it can do *next*, and a recorded status would
+    confidently say otherwise. The notes each step leaves -- the measured cone,
+    which tier the fixed pose came from -- annotate the stage and never decide
+    it.
+    """
+
+    project_path: Path
+    stage: str = "none"
+    notes: dict[str, Any] = field(default_factory=dict)
+
+    # --- artefact locations, so no caller hardcodes the layout ---
+
+    @property
+    def masks_dir(self) -> Path:
+        return self.project_path / MASKS_SUBDIR
+
+    @property
+    def init_path(self) -> Path:
+        return self.project_path / SCENE4D_INIT_RELPATH
+
+    @property
+    def dataset_zip(self) -> Path:
+        return self.project_path / DATASET4D_RELPATH
+
+    @property
+    def scene_path(self) -> Path:
+        return self.project_path / SCENE4D_RELPATH
+
+    @property
+    def g4d_path(self) -> Path:
+        return self.project_path / SCENE4D_G4D_RELPATH
+
+    @property
+    def viewer_dir(self) -> Path:
+        return self.project_path / VIEWER4D_RELPATH
+
+    @property
+    def is_fourd(self) -> bool:
+        return self.stage != "none"
+
+    @classmethod
+    def observe(cls, project_path: Path) -> FourDState:
+        project_path = Path(project_path)
+        state = cls(project_path=project_path)
+        state.notes = _read_fourd_notes(project_path)
+        # Descending, so the stage is the furthest point actually reached.
+        if (state.viewer_dir / "index.html").exists():
+            state.stage = "viewable"
+        elif state.g4d_path.exists():
+            state.stage = "exported"
+        elif state.scene_path.exists():
+            state.stage = "trained"
+        elif state.dataset_zip.exists():
+            state.stage = "packaged"
+        elif state.init_path.exists():
+            state.stage = "prepared"
+        elif state.masks_dir.is_dir() and any(state.masks_dir.glob("*.png")):
+            state.stage = "masked"
+        return state
+
+    def require(self, stage: str, hint: str) -> None:
+        """Refuse to run a step whose inputs do not exist yet.
+
+        ``hint`` names the command that produces them, because "not ready" on
+        its own is the least useful thing a pipeline can say.
+        """
+        if stage not in FOURD_STAGES:
+            raise ValueError(f"Unknown 4D stage: {stage}")
+        if FOURD_STAGES.index(self.stage) < FOURD_STAGES.index(stage):
+            raise PipelineStateError(
+                f"This project has reached the '{self.stage}' stage of the 4D path, "
+                f"which is short of '{stage}'. {hint}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        def present(path: Path) -> str | None:
+            return str(path) if path.exists() else None
+
+        # masks/ is created for every project, so its mere existence says
+        # nothing; only a directory with masks in it is an artefact.
+        has_masks = self.masks_dir.is_dir() and any(self.masks_dir.glob("*.png"))
+        return {
+            "stage": self.stage,
+            "next_command": FOURD_NEXT_COMMAND[self.stage],
+            "masks_dir": str(self.masks_dir) if has_masks else None,
+            "init": present(self.init_path),
+            "dataset_zip": present(self.dataset_zip),
+            "scene": present(self.scene_path),
+            "g4d": present(self.g4d_path),
+            "viewer": present(self.viewer_dir / "index.html"),
+            "notes": self.notes,
+        }
+
+
+def _read_fourd_notes(project_path: Path) -> dict[str, Any]:
+    path = Path(project_path) / FOURD_STATE_RELPATH
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        # Unreadable notes are an annotation lost, not a project lost.
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def record_fourd_stage(project_path: Path, stage: str, **notes: Any) -> FourDState:
+    """Append what a 4D step measured to the project's notes.
+
+    The stage argument is recorded for a human reading the file, never read
+    back by :meth:`FourDState.observe` -- see that method's docstring.
+    """
+    if stage not in FOURD_STAGES:
+        raise ValueError(f"Unknown 4D stage: {stage}")
+    project_path = Path(project_path)
+    merged = _read_fourd_notes(project_path)
+    merged.update({k: v for k, v in notes.items() if v is not None})
+    merged["stage_recorded"] = stage
+    merged["updated_at"] = utc_now()
+    path = project_path / FOURD_STATE_RELPATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(merged, indent=2, default=str), encoding="utf-8")
+    return FourDState.observe(project_path)
 
 
 @dataclass
@@ -82,6 +268,35 @@ class Project:
     def dataset_dir(self) -> Path:
         """Trainer-convention dataset root: ``images/`` plus ``sparse/0/``."""
         return self.path / "dataset"
+
+    # --- the fixed-camera 4D path ---
+
+    @property
+    def masks_dir(self) -> Path:
+        return self.path / MASKS_SUBDIR
+
+    @property
+    def scene4d_init_path(self) -> Path:
+        return self.path / SCENE4D_INIT_RELPATH
+
+    @property
+    def dataset4d_zip(self) -> Path:
+        return self.path / DATASET4D_RELPATH
+
+    @property
+    def scene4d_path(self) -> Path:
+        return self.path / SCENE4D_RELPATH
+
+    @property
+    def scene4d_g4d_path(self) -> Path:
+        return self.path / SCENE4D_G4D_RELPATH
+
+    @property
+    def viewer4d_dir(self) -> Path:
+        return self.path / VIEWER4D_RELPATH
+
+    def fourd_state(self) -> FourDState:
+        return FourDState.observe(self.path)
 
     def to_dict(self) -> dict[str, Any]:
         return {

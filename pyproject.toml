@@ -46,10 +46,28 @@ server = [
     "Pillow>=10.3",
 ]
 mesh = ["open3d>=0.18"]
+# The 4D deformation trainer. Named here because three user-facing error
+# messages tell people to install exactly this string, and an extra that pip
+# cannot resolve prints a warning and installs the bare package -- so the
+# instruction reads as followed when nothing happened.
+#
+# gsplat is CUDA-only and is built from source on install; it is listed because
+# `train4d` on a GPU host is what the extra is for, and the GPU host is where
+# the extra is installed. A laptop that only wants the CPU reference path
+# installs torch alone -- which is what CI does.
+train4d = [
+    "torch>=2.1",
+    "gsplat>=1.4",
+    "scipy>=1.11",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.6",
+    # The reference JSON Schema implementation. The CapturePack schema is the
+    # published phone-to-desktop contract and nothing validated a manifest
+    # against it, which is how the capture_settings key divergence survived.
+    "jsonschema>=4.20",
     # The reference BagIt implementation. Used only to verify that our packs
     # are readable by tooling that knows nothing about GaussCapture -- which is
     # the whole claim of the profile, so it deserves a test rather than a

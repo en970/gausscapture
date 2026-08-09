@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/en970/gausscapture/main/src/gausscapture/schemas/capturepack.schema.json",
   "title": "CapturePack manifest",
-  "description": "Manifest for a GaussCapture CapturePack. The pack is distributed as a BagIt bag (RFC 8493) whose payload contains this file at its root. Optional sensor metadata is genuinely optional: a pack created from a bare phone video has none of it, which is precisely why such a capture needs structure-from-motion downstream.",
+  "description": "Manifest for a GaussCapture CapturePack, version 0.3. The pack is distributed as a BagIt bag (RFC 8493) whose payload contains this file at its root. Optional sensor metadata is genuinely optional: a pack created from a bare phone video has none of it, which is precisely why such a capture needs structure-from-motion downstream. Everything 0.3 adds -- protocol, arc, fixed_camera, photometric, camera -- is likewise optional, so every 0.1 pack ever written still validates; a reader that needs one of those blocks says so itself rather than making the whole manifest invalid for readers that do not.",
   "type": "object",
   "required": ["capturepack_version", "session_id", "created_at", "video"],
   "additionalProperties": true,
@@ -19,8 +19,8 @@
     "session_name": { "type": "string" },
     "capture_type": {
       "type": "string",
-      "enum": ["static_scene", "dynamic_subject", "unknown"],
-      "description": "static_scene means the subject is still and the camera moves. dynamic_subject is reserved for the stationary-camera case, which is future work."
+      "enum": ["static_scene", "dynamic_subject", "fixed_camera_4d", "unknown"],
+      "description": "static_scene means the subject is still and the camera moves. fixed_camera_4d means one recording holds both: a hand-held sweep of a still subject, then the phone at rest while the subject moves. dynamic_subject is the older, looser label for the stationary-camera case and is kept so 0.1 and 0.2 packs still validate. A fixed_camera_4d pack MUST carry protocol.phases including a `hold` phase; nothing else in this schema can express that, so the 4D reader enforces it and says which field is missing."
     },
     "target_type": {
       "type": "string",
@@ -90,6 +90,148 @@
       "type": "string",
       "description": "How sensor sidecar timestamps relate to the video. Sidecars written by GaussCapture use milliseconds_since_recording_start; anything else must say so, because unanchored timestamps cannot be aligned to frames.",
       "examples": ["milliseconds_since_recording_start"]
+    },
+    "protocol": {
+      "type": "object",
+      "description": "Where a scripted capture's phases begin and end. Added in 0.3. A preset that records several phases writes them into one video rather than several files, because stopping and restarting the recorder moves the phone, and the whole premise of a fixed-camera 4D take is that the phone does not move between the reseat and the hold. Frame numbers are zero-based indices into the decoded main video, and both bounds are inclusive.",
+      "additionalProperties": true,
+      "required": ["phases"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The preset that produced this script, for example F_bullet.",
+          "examples": ["F_bullet"]
+        },
+        "fps": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Frame rate the phase bounds are expressed in. Normally identical to video.fps; present separately because the phase machine counts the frames it actually received, and a device that dropped frames must not have its bounds reinterpreted at the nominal rate."
+        },
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "description": "One entry per recorded phase, in recording order, non-overlapping.",
+          "items": {
+            "type": "object",
+            "required": ["name", "start_frame", "end_frame"],
+            "additionalProperties": true,
+            "properties": {
+              "name": {
+                "type": "string",
+                "enum": ["perch", "arc", "reseat", "hold"],
+                "description": "perch: phone in its support, 3A locking at the pose the deliverable is rendered from. arc: hand-held sweep around a subject who is holding still, which is the only part of the recording that carries parallax. reseat: phone returned to the support, hands off. hold: camera at rest, subject moving -- the training views."
+              },
+              "start_frame": { "type": "integer", "minimum": 0 },
+              "end_frame": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "rest_window": {
+          "type": "object",
+          "description": "Frames with the camera at rest AND nothing in the scene moving, normally the tail of the reseat. This is the only span in the recording that measures the sensor's noise floor rather than the scene, which is what turns the dynamic-region threshold from a guess into a measurement. It is also the evidence the fixed camera pose is inherited from.",
+          "required": ["start_frame", "end_frame"],
+          "additionalProperties": true,
+          "properties": {
+            "start_frame": { "type": "integer", "minimum": 0 },
+            "end_frame": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "auto_stopped": {
+          "type": ["boolean", "null"],
+          "description": "Whether the take ended on its own. Reaching for the phone to stop a recording moves it, and the corrupted frames are the ones closest to the motion the scene is built from, so a hand-stopped fixed-camera take is suspect."
+        },
+        "aborted_reason": {
+          "type": ["string", "null"],
+          "description": "Why the take stopped early, when it did. Present so a refused take is still a record of what was measured rather than a deleted file."
+        }
+      }
+    },
+    "arc": {
+      "type": "object",
+      "description": "What the phone's own sensors made of the hand-held sweep. Added in 0.3. These are a cross-check, never the published answer: the reconstructed view cone is measured from the solved arc cameras, and an IMU figure may only ever narrow it, because the IMU measures how far the operator's hand went and not how much of that structure-from-motion could use.",
+      "additionalProperties": true,
+      "properties": {
+        "swept_deg_left": { "type": ["number", "null"] },
+        "swept_deg_right": { "type": ["number", "null"] },
+        "swept_deg_total": { "type": ["number", "null"], "minimum": 0 },
+        "implied_cone_deg": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Half-angle the phone believes was covered on the narrower side, after its own safety margin. A symmetric cone can only be as wide as its narrower side."
+        },
+        "return_error_deg": {
+          "type": ["number", "null"],
+          "description": "Heading difference between the start and end of the sweep. A large value means the sweep was a pan rather than an orbit, which produces no usable baseline."
+        },
+        "median_rate_deg_per_sec": { "type": ["number", "null"], "minimum": 0 },
+        "duration_sec": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "fixed_camera": {
+      "type": "object",
+      "description": "What the phone observed about being at rest during the hold. Added in 0.3.",
+      "additionalProperties": true,
+      "properties": {
+        "support": {
+          "type": ["string", "null"],
+          "description": "How the phone was held still, for example tripod or leaning.",
+          "examples": ["tripod", "leaning", "unknown"]
+        },
+        "rest_confirmed": {
+          "type": ["boolean", "null"],
+          "description": "Whether the rest detector agreed the phone was still before the hold began."
+        },
+        "rest_residual_deg": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Integrated gyro rotation across the hold. On-device evidence only; the pipeline verifies the pose photometrically and publishes that residual in pixels instead."
+        },
+        "auto_stopped": { "type": ["boolean", "null"] }
+      }
+    },
+    "photometric": {
+      "type": "object",
+      "description": "The 3A state actually achieved and verified per frame, as opposed to capture_settings, which records only what was asked for. Added in 0.3 because a lock that was requested and silently refused is the failure mode that costs a whole session.",
+      "additionalProperties": true,
+      "properties": {
+        "exposure_time_ns": { "type": ["integer", "null"], "minimum": 0 },
+        "sensitivity_iso": { "type": ["integer", "null"], "minimum": 0 },
+        "frame_duration_ns": { "type": ["integer", "null"], "minimum": 0 },
+        "white_balance_mode": { "type": ["string", "null"] },
+        "colour_correction_gains": {
+          "type": ["array", "null"],
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "focus_distance_dioptres": { "type": ["number", "null"] },
+        "tonemap_mode": { "type": ["string", "null"] },
+        "noise_reduction_mode": { "type": ["string", "null"] },
+        "edge_mode": { "type": ["string", "null"] },
+        "antibanding_mode": { "type": ["string", "null"] },
+        "screen_brightness": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "locks_verified_ratio": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of frames whose result metadata matched the requested lock."
+        }
+      }
+    },
+    "camera": {
+      "type": "object",
+      "description": "Which physical camera recorded this. Added in 0.3 because the sensor-to-camera mapping used to derive gravity is different for a front camera and a back one, and no downstream check can catch the substitution: the two mappings tie exactly when the phone is square to gravity, which is a phone on a desk pointed at a seated face.",
+      "additionalProperties": true,
+      "properties": {
+        "lens_facing": {
+          "type": "string",
+          "enum": ["front", "back", "external", "unknown"]
+        },
+        "physical_id": { "type": ["string", "null"] },
+        "logical_id": { "type": ["string", "null"] },
+        "sensor_orientation_deg": { "type": ["integer", "null"] },
+        "zoom_ratio": { "type": ["number", "null"], "minimum": 0 }
+      }
     }
   }
 }

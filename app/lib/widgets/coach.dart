@@ -13,16 +13,29 @@ import '../design.dart';
 ///
 /// Two words maximum, imperative, no units and no jargon. "Slow down", not "ω 1.8 rad/s". The
 /// physics is computed and the verb is spoken.
+///
+/// It carries two kinds of message, and deliberately in the same slot and the same colour. A
+/// warning ("Hands off") and a scripted cue ("Sweep around") are both *act now*, and hue is
+/// reserved for exactly that — so what separates them is the glyph and the word, never the colour,
+/// which is also what keeps them legible to an operator who cannot distinguish them. One slot
+/// rather than two because two amber shapes competing for the same glance is how both get ignored.
 class Coach extends StatelessWidget {
-  const Coach({super.key, required this.message});
+  const Coach({super.key, required this.message, this.icon = Icons.speed});
 
   final String? message;
 
+  /// The glyph beside the word. State is never encoded in hue alone.
+  final IconData icon;
+
   @override
   Widget build(BuildContext context) {
+    // Honour the platform's reduced-motion setting: the message still appears, it just does not
+    // slide or fade its way in.
+    final instant = MediaQuery.disableAnimationsOf(context);
+
     return AnimatedSwitcher(
-      duration: Motion.appear,
-      reverseDuration: Motion.vanish,
+      duration: instant ? Duration.zero : Motion.appear,
+      reverseDuration: instant ? Duration.zero : Motion.vanish,
       // Deliberately not a cross-fade: two messages briefly overlapping is unreadable, so one
       // leaves before the next arrives.
       switchInCurve: Curves.decelerate,
@@ -39,9 +52,11 @@ class Coach extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.speed, size: 40, color: Palette.onWarn),
+                  Icon(icon, size: 40, color: Palette.onWarn),
                   const SizedBox(width: Space.md),
-                  Text(message!, style: Fonts.glance),
+                  Flexible(
+                    child: Text(message!, style: Fonts.glance, textAlign: TextAlign.center),
+                  ),
                 ],
               ),
             ),

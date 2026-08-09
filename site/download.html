@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Download GaussCapture for Android</title>
+<meta name="description" content="Download the GaussCapture Android capture app as a signed APK, with its SHA-256 checksum. What it records, the four-phase capture, and the bounded view cone it produces.">
+
+<!--
+  ==================================================================
+  SECURITY POLICY — what this page is allowed to load, and why
+  ==================================================================
+
+  DELIVERED AS META TAGS (this is a static GitHub Pages site; there is no
+  server configuration and no _headers file, so a meta tag is the only
+  delivery mechanism available for anything that supports one):
+
+    * Content-Security-Policy      — supported in meta, enforced.
+    * <meta name="referrer">       — supported in meta, enforced.
+
+  HEADER-ONLY, THEREFORE NOT SET HERE (stating them so a reviewer knows the
+  omission is deliberate rather than forgotten):
+
+    * X-Content-Type-Options: nosniff — browsers ignore this in a meta tag by
+      specification; it must come from the server. GitHub Pages sends it on
+      static assets. Verify, do not take it on trust:
+          curl -sI https://en970.github.io/gausscapture/download.html | grep -i x-content-type
+      If this site ever moves to a host that does not send it, the fix is a
+      server header, not markup.
+
+    * frame-ancestors — the directive below IS ignored by browsers when the
+      policy arrives in a meta tag (again by specification; it needs the real
+      header). It is written down anyway so the policy is already correct the
+      day this content is served from somewhere that can send headers.
+      Meanwhile the clickjacking exposure is genuinely nil rather than merely
+      small: this page has no script, no form, no input, no cookie and no
+      state. The only actionable controls on it are links, and a framed link
+      that a victim clicks does nothing an attacker could not have linked to
+      directly.
+
+  THE POLICY, DIRECTIVE BY DIRECTIVE:
+
+    default-src 'none'   Nothing loads unless a directive below names it.
+                         This covers script-src, connect-src, font-src,
+                         media-src, object-src, worker-src and the rest by
+                         fallback, so there is no script, no fetch, no
+                         websocket, no webfont, no plugin. The page needs none
+                         of them: everything it does is text and links.
+    style-src 'self'     One same-origin stylesheet, gausscapture.css. No
+                         'unsafe-inline' and no hashes, which is why this file
+                         contains no <style> block and not one style="..."
+                         attribute — those are style-src too.
+    img-src  'self'      One same-origin file, icon.svg, used as the favicon.
+                         data: is deliberately NOT permitted; the diagrams on
+                         this page are inline <svg> markup, which is parsed as
+                         part of the document and fetches nothing.
+    base-uri 'none'      Does not fall back to default-src. Without it, an
+                         injected <base> could repoint every relative URL on
+                         the page at another origin.
+    form-action 'none'   Does not fall back to default-src either. There is no
+                         form here; this is what keeps that true.
+    frame-ancestors 'none'  See the note above about meta delivery.
+
+  NO EXTERNAL REQUESTS OF ANY KIND. No CDN, no Google Fonts, no analytics, no
+  remote image, no iframe, no preconnect, no favicon service. Typography is
+  system font stacks (see gausscapture.css). The APK itself is a link the
+  reader clicks, not a resource the page fetches — releases live on GitHub and
+  the policy above would block an automatic fetch of one, which is correct.
+
+  Every external link carries rel="noopener noreferrer": noopener so the
+  opened page cannot reach back through window.opener, noreferrer so the
+  destination is not told which page sent the reader. The document-wide
+  no-referrer meta covers this too; both are present because the meta is a
+  default that a future edit could change in one place, while the attribute
+  travels with the link.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<meta name="referrer" content="no-referrer">
+
+<link rel="stylesheet" href="gausscapture.css">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+</head>
+<body>
+
+<a class="skip" href="#download">Skip to the download</a>
+
+<header>
+  <div class="wrap">
+    <p class="eyebrow">Android · MIT · direct download</p>
+    <h1>GaussCapture for Android</h1>
+    <p class="sub">A capture app for 3D Gaussian splatting. It records video, the camera's own
+      per-frame metadata and the motion sensors on one shared clock, and writes a folder your
+      computer can reconstruct from. Android 9 or newer, and a stand to put the phone on. It is
+      not on Google Play; you install the APK yourself.</p>
+    <div class="cta">
+      <a class="btn primary big" href="https://github.com/en970/gausscapture/releases/latest/download/gausscapture.apk" rel="noopener noreferrer">
+        <svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5v8.5"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M2 13.5h12"/></svg>Download the APK</a>
+      <a class="btn" href="https://github.com/en970/gausscapture" rel="noopener noreferrer">Source on GitHub</a>
+      <a class="btn" href="index.html">What the project is</a>
+    </div>
+  </div>
+</header>
+
+<section id="download">
+  <div class="wrap">
+    <h2>The download</h2>
+
+    <div class="get">
+      <div class="row">
+        <a class="btn primary big" href="https://github.com/en970/gausscapture/releases/latest/download/gausscapture.apk" rel="noopener noreferrer">
+          <svg class="ico" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5v8.5"/><path d="M4.5 7 8 10.5 11.5 7"/><path d="M2 13.5h12"/></svg>gausscapture.apk</a>
+        <p class="facts">
+          <b>Android 9.0 (API 28) or newer</b><br>
+          <b>arm64-v8a · armeabi-v7a · x86_64 in one file</b>
+        </p>
+      </div>
+
+      <!--
+        The line below is rewritten in place by .github/workflows/release.yml
+        every time a tag is pushed, between the two markers. Do not reformat it
+        by hand: the workflow matches on the markers and replaces everything
+        between them, so hand edits are overwritten at the next release. The
+        same workflow attaches gausscapture.apk.sha256 beside the APK, and that
+        file is the authoritative copy — this page is a convenience so you can
+        see the value before you download anything.
+      -->
+      <!-- SHA256:BEGIN -->
+      <p class="sum">
+        <span class="label">SHA-256 · gausscapture.apk</span>
+        <span class="pending">No release has been published yet. Until one is, the button above
+          has nothing to resolve to and this line has no checksum to show. The release workflow
+          fills it in.</span>
+      </p>
+      <!-- SHA256:END -->
+
+      <p class="small"><strong>Verify it before you install it.</strong> Run
+        <code>shasum -a 256 gausscapture.apk</code> (macOS, Linux) or
+        <code>certutil -hashfile gausscapture.apk SHA256</code> (Windows) and check that the 64
+        characters it prints are the 64 characters above — if they differ, the file you have is
+        not the file that was built, and you should not install it. The same value is published
+        as
+        <a href="https://github.com/en970/gausscapture/releases/latest/download/gausscapture.apk.sha256" rel="noopener noreferrer"><code>gausscapture.apk.sha256</code></a>
+        next to the APK on the release page.</p>
+    </div>
+
+    <p class="small">The APK is built from a tagged commit by
+      <a href="https://github.com/en970/gausscapture/blob/main/.github/workflows/release.yml" rel="noopener noreferrer">a GitHub Actions workflow</a>
+      that also computes that checksum, so you can read exactly how the file you are downloading
+      was produced. Source is MIT; you can build it yourself with
+      <code>flutter build apk --release</code>.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Installing it outside the store</h2>
+    <p>Android will not install an APK that did not come from a store until you tell it that the
+      app you downloaded it with is allowed to do that. This is a prompt, not an error, and if
+      nobody warns you about it the install looks broken.</p>
+
+    <ol class="steps">
+      <li>Download the file on the phone, or copy it across and open it from the Files app.</li>
+      <li>Tap it. Android says something like <em>“For your security, your phone is not allowed to
+        install unknown apps from this source.”</em> Choose <strong>Settings</strong>.</li>
+      <li>Turn on <strong>Allow from this source</strong> — you are granting it to Chrome or Files,
+        not to the world — then go back and tap the file again.</li>
+      <li>Play Protect may add <em>“Unsafe app blocked”</em> or offer to scan it. That warning is
+        about provenance, not about anything it found: Google has not seen this app before. Choose
+        <strong>Install anyway</strong> or <strong>More details → Install anyway</strong>.</li>
+      <li>Turn the permission back off afterwards if you like. It is per-app and it sticks.</li>
+    </ol>
+
+    <div class="note warn">
+      <p><strong>Updating.</strong> Android refuses to replace an installed app with a build signed
+        by a different key. If an install fails with a signature error, uninstall the old copy
+        first. Captures that reached <code>Documents/GaussCapture</code> survive an uninstall;
+        captures still in the app's private folder — which is where they land if you declined the
+        storage permission — do not. Copy them off first.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>What it records</h2>
+    <p>One take produces a folder — a <em>capture pack</em> — not just a video. The pack is the
+      point: a video on its own throws away the timing and the motion that make it reconstructable.</p>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>In the pack</th><th>What it is for</th></tr></thead>
+        <tbody>
+          <tr><td>The video</td><td>H.264 in an MP4 — 1080p where the camera offers it, with the frame rate pinned at 30.</td></tr>
+          <tr><td>Per-frame camera metadata</td><td>Exposure, ISO, focus distance, lens intrinsics and the sensor timestamp of every single frame.</td></tr>
+          <tr><td>Sensor streams</td><td>Gyroscope and accelerometer, calibrated and uncalibrated, plus both rotation vectors — logged on a thread of their own at the highest rate the phone allows.</td></tr>
+          <tr><td>A manifest</td><td>Which protocol was shot, where each phase started and ended, whether the phone was measurably at rest, how far the sweep actually went, and every problem the app noticed while recording.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Frame timestamps and sensor timestamps are written from <em>one hardware clock</em>, which is
+      what lets a frame be paired with the accelerometer reading taken at that instant. That
+      pairing is how the world's up direction is recovered — measured at 0.998 agreement across a
+      capture, against heuristics that were wrong by as much as 41 degrees.</p>
+
+    <p>Packs are written to <code>Documents/GaussCapture</code> so a computer can see them over
+      USB. Granting the storage permission is what puts them there; refuse it and the app keeps
+      working, but the folder is only reachable over <code>adb</code>.</p>
+
+    <p class="small">Six capture protocols ship: three ordinary sweeps at different paces, two that
+      are <em>expected</em> to fail — rotation on the spot, and a moving subject filmed from a
+      stationary phone — so you can see what failure looks like, and the four-phase protocol
+      below.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The four-phase capture</h2>
+    <p><strong>F · Bullet time</strong> is one recording with a script inside it. It is the only one of the six
+      that can reconstruct a moving subject, and it is the reason the phone needs something to sit
+      on.</p>
+
+    <div class="phases">
+      <div class="phase">
+        <p class="t"><b>2 s</b>perch</p>
+        <div>
+          <h4>Hold still</h4>
+          <p>Phone in its support, your face framed, hands off. This is the pose the finished
+            result is shot from, held long enough for exposure and white balance to settle before
+            anything is locked.</p>
+        </div>
+      </div>
+      <div class="phase">
+        <p class="t"><b>12 s</b>arc</p>
+        <div>
+          <h4>Sweep around</h4>
+          <p>Lift the phone and sweep it about 60° around your own face — and <strong>you hold
+            still while you do it</strong>. This is the only phase that contains geometry: while
+            you are still, your head is part of a rigid scene and triangulates like the wall behind
+            you. A camera that never moves cannot produce this, at any exposure, ever.</p>
+        </div>
+      </div>
+      <div class="phase">
+        <p class="t"><b>~3 s</b>reseat</p>
+        <div>
+          <h4>Phone back</h4>
+          <p>Put it back where it was and let go. This phase ends on a measurement, never on a
+            clock: the gyroscope and accelerometer together decide when the phone is actually at
+            rest, and the countdown restarts the moment you touch it again.</p>
+        </div>
+      </div>
+      <div class="phase">
+        <p class="t"><b>3 s</b>hold</p>
+        <div>
+          <h4>Now move</h4>
+          <p>Talk, smile, turn your head. The phone stays put. The recording stops itself — reaching
+            over to press stop would move the camera, and the frames it would corrupt are the ones
+            closest to the motion the take exists to capture.</p>
+        </div>
+      </div>
+    </div>
+
+    <p>One file rather than four, because the phase that carries the geometry and the phase that
+      carries the motion have to share an exposure, a white balance and a clock — and because
+      stopping the recorder to start it again moves the phone.</p>
+
+    <div class="note">
+      <p><strong>You need a support.</strong> A stand, a tripod, a case propped against a mug — the
+        requirement is only that the phone does not move at all during the last two phases and that
+        you can put it back roughly where it was. Every frame of the hold is given the same camera
+        pose downstream; if the phone is still settling, that assumption is false and nothing later
+        would ever say so.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>What you get, and what you do not</h2>
+
+    <p>The result is a <strong>bounded card</strong>, not a free orbit. You can move the viewpoint
+      inside a measured cone around the camera axis, and you can scrub time. You cannot walk around
+      the subject.</p>
+
+    <figure>
+      <svg viewBox="0 0 560 250" role="img" aria-label="Diagram: the phone sits at the left. A shaded cone of about plus or minus 25 degrees around the camera axis marks the viewpoints the recording supports. Beyond that shaded region, on the far side of the subject, nothing was ever recorded.">
+        <defs>
+          <linearGradient id="conegrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="currentColor" stop-opacity="0.20"/>
+            <stop offset="100%" stop-color="currentColor" stop-opacity="0.05"/>
+          </linearGradient>
+        </defs>
+        <g color="var(--accent)">
+          <circle cx="330" cy="125" r="98" fill="none" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="5 5"/>
+          <path d="M100 125 L318 79 A98 98 0 0 1 318 171 Z" fill="url(#conegrad)" stroke="currentColor" stroke-width="1.5"/>
+          <rect x="66" y="112" width="34" height="26" rx="4" fill="var(--panel)" stroke="currentColor" stroke-width="2"/>
+          <circle cx="83" cy="125" r="6" fill="currentColor"/>
+          <circle cx="330" cy="125" r="27" fill="var(--panel)" stroke="currentColor" stroke-width="2"/>
+          <path d="M330 98 A27 27 0 0 1 330 152 Z" fill="currentColor" fill-opacity="0.18"/>
+        </g>
+        <g font-family="ui-monospace,monospace" font-size="12" fill="var(--faint)">
+          <text x="60" y="160">phone</text>
+          <text x="60" y="175">on its rest</text>
+          <text x="188" y="118" fill="var(--accent)">the cone you may</text>
+          <text x="188" y="134" fill="var(--accent)">move inside</text>
+          <text x="440" y="76">outside it:</text>
+          <text x="440" y="92">no data at all</text>
+          <text x="296" y="228">the far side of the subject</text>
+          <text x="296" y="244">is never in the recording</text>
+        </g>
+      </svg>
+      <figcaption><strong>Why the boundary is physical.</strong> A camera at rest sees one side of a
+        moving subject. The occluded side is not in the file, so no amount of training recovers it —
+        a method that renders it is inventing it. The 12-second sweep is what buys the cone: it is
+        roughly 60° wide, and the phone publishes a deliberately conservative estimate at 0.8 of its
+        narrower half. The cone the viewer actually clamps to is narrower still, because it is
+        measured afterwards from the cameras that structure-from-motion genuinely solved, not from
+        the sweep you intended. The boundary is drawn and labelled in the viewer, so you can see
+        where the data stops.</figcaption>
+    </figure>
+
+    <p class="small">Static scenes have no such limit. Walk a slow circle around an object with one
+      of the ordinary sweeps and you get a splat you can view from anywhere; the cone is the price
+      of the camera standing still, and nothing else.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Requirements</h2>
+    <dl class="kv">
+      <dt>OS</dt>
+      <dd>Android 9.0 (API 28) or newer. There is no iOS build.</dd>
+
+      <dt>Hardware</dt>
+      <dd>A gyroscope and an accelerometer, both required — the app will not install on a phone
+        without them. A front camera for the four-phase protocol, which films you.</dd>
+
+      <dt>Support</dt>
+      <dd>Something to stand the phone on, for the fixed-camera phases. Handheld will not do: the
+        whole method rests on the camera being measurably at rest.</dd>
+
+      <dt>Storage</dt>
+      <dd>About 46 MB to download — one APK carrying all three architectures — plus room for the
+        captures themselves, which are 1080p video and run to a few hundred megabytes a minute.</dd>
+
+      <dt>Permissions</dt>
+      <dd>Camera, asked at first use. All-files access, so packs land in
+        <code>Documents/GaussCapture</code> where your computer can see them; decline it and the
+        app falls back to private storage. High-rate sensor access, which Android requires for
+        anything above 200 Hz — without it the gyroscope is silently capped and the pack is worth
+        less.</dd>
+
+      <dt>Network</dt>
+      <dd>None. The release build declares no <code>INTERNET</code> permission at all — Android
+        will not let it open a socket even if some future dependency tried to. Nothing is uploaded,
+        there is no analytics, and everything it produces stays on the phone until you copy it
+        off.</dd>
+    </dl>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Then what</h2>
+    <p>Copy the pack off the phone and hand it to the command-line tool, which does the quality
+      analysis, the pose solve and the export locally. It is not on PyPI yet, so it comes from the
+      repository:</p>
+    <pre>brew install ffmpeg colmap
+git clone https://github.com/en970/gausscapture
+cd gausscapture &amp;&amp; ./install_macos.sh
+
+gausscapture doctor              # what is missing on this machine
+gausscapture import PACK.capturepack   # read the pack into a project
+gausscapture telemetry PROJECT         # was this capture any good?</pre>
+    <p class="small">Training itself needs a CUDA GPU, and there is no Metal path worth using;
+      everything either side of it — import, quality analysis, frame extraction, pose, masking,
+      export and the viewer — runs on an ordinary laptop.</p>
+    <div class="note">
+      <p><strong>The 4D stages are still landing.</strong> The app records the four-phase capture
+        today and the pack is complete and readable. On the desktop side the bounded bullet-time
+        path — <code>prep4d</code>, <code>train4d</code>, <code>export4d</code>,
+        <code>viewer4d</code> — is present but not yet end to end; the static pipeline is the one
+        that works today. The
+        <a href="https://github.com/en970/gausscapture#readme" rel="noopener noreferrer">README</a>
+        and the <a href="https://github.com/en970/gausscapture/blob/main/docs/ROADMAP.md" rel="noopener noreferrer">roadmap</a>
+        say which is which, and are the thing to trust over this page if they disagree.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p><strong class="ink">GaussCapture</strong> — MIT licensed. Copyright © 2026 Enes Öz.</p>
+    <p><a href="https://github.com/en970/gausscapture" rel="noopener noreferrer">github.com/en970/gausscapture</a>
+      · <a href="mailto:enesozile@gmail.com">enesozile@gmail.com</a>
+      · <a href="index.html">about the project</a></p>
+    <p class="footnote">This page loads one stylesheet and one icon, both from this site, and runs
+      no script. If your browser reports a request to any other host from it, something is wrong
+      and you should tell me.</p>
+  </div>
+</footer>
+
+</body>
+</html>

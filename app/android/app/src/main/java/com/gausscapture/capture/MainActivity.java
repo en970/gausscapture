@@ -148,6 +148,9 @@ public final class MainActivity extends FlutterActivity implements CaptureEngine
                         row.put("hint", preset.hint);
                         row.put("targetSeconds", preset.targetSeconds);
                         row.put("expectedToFail", preset.expectedToFail);
+                        row.put("scripted", preset.isScripted());
+                        row.put("captureType", preset.captureType);
+                        row.put("phaseCount", preset.phases.length);
                         out.add(row);
                     }
                     result.success(out);
@@ -204,6 +207,13 @@ public final class MainActivity extends FlutterActivity implements CaptureEngine
         out.put("cameraRealtime", engine.clocks().cameraUsesRealtime());
         out.put("sensorClock", engine.clocks().sensorClock().name());
 
+        // The script, so the interface can draw the four phases before a take starts rather than
+        // discovering them one at a time as they arrive in telemetry.
+        out.put("scripted", engine.isScripted());
+        out.put("phaseIds", engine.phaseIds());
+        out.put("phaseCount", engine.phaseCount());
+        out.put("arcTargetDeg", engine.arcTargetDeg());
+
         CameraController camera = engine.camera();
         out.put("focalPixels", camera == null ? 0f : camera.focalPixels());
         out.put("cameraReady", camera != null);
@@ -226,6 +236,26 @@ public final class MainActivity extends FlutterActivity implements CaptureEngine
             frame.put("angularRate", engine.sensors().angularRate());
             frame.put("imuSamples", engine.sensors().sampleCount());
             frame.put("imuRateHz", engine.sensors().measuredRateHz());
+
+            // The script. Ten values rather than one because each drives a different layer of the
+            // guidance, and an interface that had to infer the phase from the elapsed time would
+            // be wrong exactly at the boundaries, which are the moments it exists to signal.
+            frame.put("phaseId", engine.phaseId());
+            frame.put("phaseIndex", engine.phaseIndex());
+            frame.put("phaseCount", engine.phaseCount());
+            frame.put("phaseCue", engine.phaseCue());
+            frame.put("phaseDetail", engine.phaseDetail());
+            frame.put("phaseWarning", engine.phaseWarning());
+            frame.put("phaseElapsedMs", engine.phaseElapsedMs());
+            frame.put("phaseTargetMs", engine.phaseTargetMs());
+            frame.put("phaseTransitions", engine.phaseTransitions());
+            frame.put("countdownMs", engine.countdownMillis());
+            frame.put("atRest", engine.atRest());
+            frame.put("restForMs", engine.restForMillis());
+            frame.put("restDisturbed", engine.restDisturbed());
+            frame.put("arcSweptDeg", engine.arcSweptDeg());
+            frame.put("arcDirection", engine.arcDirection());
+
             CameraController camera = engine.camera();
             frame.put("frames", camera == null ? 0 : camera.frameCount());
             frame.put("exposureNs", camera == null ? 0L : camera.lastExposureNanos());
@@ -255,6 +285,39 @@ public final class MainActivity extends FlutterActivity implements CaptureEngine
                 if (commands != null) {
                     commands.invokeMethod("stateChanged", status());
                 }
+            }
+        });
+    }
+
+    /**
+     * A scripted take ended by itself, and nothing on the Flutter side asked for it.
+     *
+     * <p>This is the callback the whole auto-stop exists for. The dynamic phase ends without anyone
+     * touching the phone — that is the point, because reaching for it moves it and the frames that
+     * would corrupt are the last ones — so the interface has no way to learn the take is over
+     * except by being told. Without this the record button would sit there claiming to be
+     * recording, and the operator would press it and start a second take.
+     *
+     * <p>The screen hold and the orientation lock are released here for the same reason: they were
+     * taken in {@code start} and the ordinary release path runs in the {@code stop} command, which
+     * never ran.
+     */
+    @Override
+    public void onFinished(final JSONObject manifest, final String reason, final boolean aborted) {
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                holdScreen(false);
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                if (commands == null) {
+                    return;
+                }
+                Map<String, Object> out = new HashMap<>();
+                out.put("reason", reason);
+                out.put("aborted", aborted);
+                out.put("manifest", manifest == null ? null : toMap(manifest));
+                out.put("status", status());
+                commands.invokeMethod("finished", out);
             }
         });
     }
@@ -308,11 +371,25 @@ public final class MainActivity extends FlutterActivity implements CaptureEngine
         }
     }
 
+    /**
+     * Keep the screen alive for the take, at the brightness the preset asks for.
+     *
+     * <p>Not one brightness for every preset. On the back camera the panel faces away from the
+     * scene and full brightness is the only thing that makes the preview readable outdoors. On the
+     * front camera the panel <em>is</em> a light source about 300 mm from the subject's face, and
+     * during the arc it travels with the camera — so a bright panel writes a moving specular
+     * highlight into every frame and breaks the brightness constancy the reconstruction assumes.
+     * {@link Preset#screenBrightness} carries that decision; forcing 1.0 here would quietly
+     * override it.
+     */
     private void holdScreen(boolean hold) {
         WindowManager.LayoutParams attributes = getWindow().getAttributes();
         if (hold) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-            attributes.screenBrightness = 1.0f;
+            float wanted = engine.preset().screenBrightness;
+            attributes.screenBrightness = wanted < 0
+                    ? WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    : Math.max(0f, Math.min(1f, wanted));
         } else {
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             attributes.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;

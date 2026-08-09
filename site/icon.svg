@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GaussCapture">
+  <!--
+    A same-origin file rather than a data: URI, so that img-src can be exactly
+    'self' and the policy never has to allow data: anywhere.
+
+    The mark is the app's launcher icon reduced to 64 px: one elliptical
+    Gaussian shown three times along its short axis, the leading instance
+    opaque and the two behind it fading — what a splat rasteriser composites,
+    rather than an ellipse with a blur on it. Tilted 22 degrees because three
+    horizontal lobes read as a hamburger menu.
+  -->
+  <rect width="64" height="64" rx="14" fill="#0B0F14"/>
+  <g transform="rotate(-22 32 32)" fill="#FFB020">
+    <ellipse cx="32" cy="43" rx="19" ry="7" opacity="0.22"/>
+    <ellipse cx="32" cy="36" rx="19" ry="7" opacity="0.45"/>
+    <ellipse cx="32" cy="28" rx="19" ry="7"/>
+  </g>
+</svg>

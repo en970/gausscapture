@@ -26,6 +26,7 @@ class CaptureEngine {
 
   final _problems = StreamController<String>.broadcast();
   final _status = StreamController<CaptureStatus>.broadcast();
+  final _finished = StreamController<FinishedTake>.broadcast();
 
   /// Failures the operator did not cause and cannot see: a full card, the camera taken by another
   /// app, an encoder fault. These used to reach nobody.
@@ -33,6 +34,14 @@ class CaptureEngine {
 
   /// Emitted whenever the engine's own state changes underneath the interface.
   Stream<CaptureStatus> get statusChanges => _status.stream;
+
+  /// A scripted take that ended by itself.
+  ///
+  /// Not a problem and not a stop the operator asked for. The dynamic phase auto-stops precisely so
+  /// that nobody reaches for the phone — reaching for it moves it, and the frames that would
+  /// corrupt are the last ones, the ones closest to the motion the take exists to record. Which
+  /// means nothing on this side knows the take is over unless it is told.
+  Stream<FinishedTake> get finished => _finished.stream;
 
   /// Live capture signals, at roughly 10 Hz.
   Stream<Telemetry> get telemetry =>
@@ -45,6 +54,13 @@ class CaptureEngine {
         break;
       case 'stateChanged':
         _status.add(CaptureStatus.fromMap(Map<String, dynamic>.from(call.arguments as Map)));
+        break;
+      case 'finished':
+        final map = Map<String, dynamic>.from(call.arguments as Map);
+        if (map['status'] != null) {
+          _status.add(CaptureStatus.fromMap(Map<String, dynamic>.from(map['status'] as Map)));
+        }
+        _finished.add(FinishedTake.fromMap(map));
         break;
     }
   }
@@ -96,6 +112,9 @@ class Preset {
     required this.hint,
     required this.targetSeconds,
     required this.expectedToFail,
+    this.scripted = false,
+    this.captureType = 'static_scene',
+    this.phaseCount = 1,
   });
 
   factory Preset.fromMap(Map<String, dynamic> map) => Preset(
@@ -104,6 +123,9 @@ class Preset {
         hint: map['hint'] as String? ?? '',
         targetSeconds: map['targetSeconds'] as int? ?? 60,
         expectedToFail: map['expectedToFail'] as bool? ?? false,
+        scripted: map['scripted'] as bool? ?? false,
+        captureType: map['captureType'] as String? ?? 'static_scene',
+        phaseCount: map['phaseCount'] as int? ?? 1,
       );
 
   final String id;
@@ -112,8 +134,43 @@ class Preset {
   final int targetSeconds;
   final bool expectedToFail;
 
+  /// Whether this take is several phases inside one recording rather than one undivided stretch.
+  ///
+  /// One file, not several, because the phase that carries the geometry and the phase that carries
+  /// the motion have to share an exposure, a white balance and a clock — and because stopping the
+  /// recorder to start it again moves the phone, which is the one thing the fixed-camera half of
+  /// the take assumes did not happen.
+  final bool scripted;
+
+  /// What the manifest declares, and therefore which pipeline the desktop dispatches to.
+  final String captureType;
+  final int phaseCount;
+
   /// The letter an operator actually refers to a shot by.
   String get letter => id.isEmpty ? '?' : id[0];
+}
+
+/// A take that ended without anyone pressing stop.
+class FinishedTake {
+  const FinishedTake({required this.reason, required this.aborted, this.manifest});
+
+  factory FinishedTake.fromMap(Map<String, dynamic> map) => FinishedTake(
+        reason: map['reason'] as String? ?? 'complete',
+        aborted: map['aborted'] as bool? ?? false,
+        manifest: map['manifest'] == null
+            ? null
+            : Map<String, dynamic>.from(map['manifest'] as Map),
+      );
+
+  /// `complete`, or a sentence saying what went wrong.
+  final String reason;
+
+  /// True when the script gave up rather than finished. The footage is still on disk and the
+  /// manifest still says what was measured — a refused take is a record, not a deleted file.
+  final bool aborted;
+  final Map<String, dynamic>? manifest;
+
+  bool get completed => !aborted;
 }
 
 /// What the engine is and where it will write, in one snapshot.
@@ -135,6 +192,9 @@ class CaptureStatus {
     this.focalPixels = 0,
     this.cameraReady = false,
     this.imuRateHz = 0,
+    this.scripted = false,
+    this.phaseIds = const [],
+    this.arcTargetDeg = 0,
   });
 
   factory CaptureStatus.fromMap(Map<String, dynamic> map) => CaptureStatus(
@@ -154,6 +214,9 @@ class CaptureStatus {
         focalPixels: (map['focalPixels'] as num?)?.toDouble() ?? 0,
         cameraReady: map['cameraReady'] as bool? ?? false,
         imuRateHz: map['imuRateHz'] as int? ?? 0,
+        scripted: map['scripted'] as bool? ?? false,
+        phaseIds: (map['phaseIds'] as List?)?.map((e) => e as String).toList() ?? const [],
+        arcTargetDeg: map['arcTargetDeg'] as int? ?? 0,
       );
 
   final bool recording;
@@ -180,6 +243,16 @@ class CaptureStatus {
   final bool cameraReady;
   final int imuRateHz;
 
+  /// True when the selected preset is a script rather than one stretch of recording.
+  final bool scripted;
+
+  /// The phases in order, known before the take starts so the rail can be drawn empty rather than
+  /// growing a segment at a time as each phase is entered.
+  final List<String> phaseIds;
+
+  /// Degrees the sweep is aiming for, or zero for a preset with no arc.
+  final int arcTargetDeg;
+
   /// Motion warnings need a focal length to convert angular rate into pixels of smear.
   bool get canWarnAboutMotion => focalPixels > 0;
 }
@@ -195,6 +268,21 @@ class Telemetry {
     this.imuRateHz = 0,
     this.frames = 0,
     this.exposureNs = 0,
+    this.phaseId = '',
+    this.phaseIndex = 0,
+    this.phaseCount = 1,
+    this.phaseCue = '',
+    this.phaseDetail = '',
+    this.phaseWarning,
+    this.phaseElapsedMs = 0,
+    this.phaseTargetMs = 0,
+    this.phaseTransitions = 0,
+    this.countdownMs = -1,
+    this.atRest = false,
+    this.restForMs = 0,
+    this.restDisturbed = false,
+    this.arcSweptDeg = 0,
+    this.arcDirection = 0,
   });
 
   factory Telemetry.fromMap(Map<String, dynamic> map) => Telemetry(
@@ -206,6 +294,21 @@ class Telemetry {
         imuRateHz: (map['imuRateHz'] as num?)?.toInt() ?? 0,
         frames: (map['frames'] as num?)?.toInt() ?? 0,
         exposureNs: (map['exposureNs'] as num?)?.toInt() ?? 0,
+        phaseId: map['phaseId'] as String? ?? '',
+        phaseIndex: (map['phaseIndex'] as num?)?.toInt() ?? 0,
+        phaseCount: (map['phaseCount'] as num?)?.toInt() ?? 1,
+        phaseCue: map['phaseCue'] as String? ?? '',
+        phaseDetail: map['phaseDetail'] as String? ?? '',
+        phaseWarning: map['phaseWarning'] as String?,
+        phaseElapsedMs: (map['phaseElapsedMs'] as num?)?.toInt() ?? 0,
+        phaseTargetMs: (map['phaseTargetMs'] as num?)?.toInt() ?? 0,
+        phaseTransitions: (map['phaseTransitions'] as num?)?.toInt() ?? 0,
+        countdownMs: (map['countdownMs'] as num?)?.toInt() ?? -1,
+        atRest: map['atRest'] as bool? ?? false,
+        restForMs: (map['restForMs'] as num?)?.toInt() ?? 0,
+        restDisturbed: map['restDisturbed'] as bool? ?? false,
+        arcSweptDeg: (map['arcSweptDeg'] as num?)?.toDouble() ?? 0,
+        arcDirection: (map['arcDirection'] as num?)?.toInt() ?? 0,
       );
 
   final bool recording;
@@ -220,6 +323,51 @@ class Telemetry {
   final int imuRateHz;
   final int frames;
   final int exposureNs;
+
+  // --- the script -----------------------------------------------------------
+  //
+  // Measured on the other side of the channel rather than inferred here. A phase boundary is the
+  // moment the phone was measured to have stopped moving, not a point on a stopwatch, and an
+  // interface that timed the phases itself would be wrong exactly at the transitions — which are
+  // the only moments it exists to signal.
+
+  /// `perch`, `arc`, `reseat`, `hold`, or `free` for an unscripted take.
+  final String phaseId;
+  final int phaseIndex;
+  final int phaseCount;
+
+  /// The one word for this phase. Neutral: an instruction, never a fault.
+  final String phaseCue;
+  final String phaseDetail;
+
+  /// The one thing that is wrong, or null. Never populated during the dynamic phase — the subject
+  /// is being asked to look natural, and there is nothing useful they could do about the phone now.
+  final String? phaseWarning;
+
+  final int phaseElapsedMs;
+  final int phaseTargetMs;
+
+  /// Counts phase changes, so the interface can buzz exactly once on each without timing them.
+  final int phaseTransitions;
+
+  /// Milliseconds until the dynamic phase begins, or −1 when nothing is counting down.
+  final int countdownMs;
+
+  /// Whether the phone is measurably still right now — gyroscope and accelerometer together, not
+  /// "the operator put it down".
+  final bool atRest;
+  final int restForMs;
+
+  /// Latched: rest was confirmed and then lost. The take can no longer claim a fixed camera.
+  final bool restDisturbed;
+
+  final double arcSweptDeg;
+
+  /// Which way the sweep still needs to go: −1 left, +1 right, 0 when both sides have their share.
+  final int arcDirection;
+
+  double get phaseProgress =>
+      phaseTargetMs <= 0 ? 0 : (phaseElapsedMs / phaseTargetMs).clamp(0.0, 1.0);
 }
 
 /// A take on disk.

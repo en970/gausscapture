@@ -22,7 +22,7 @@
  * and only when the camera has actually moved.
  */
 
-const WORKER_SOURCE = `
+export const WORKER_SOURCE = `
 let positions = null;
 let count = 0;
 
@@ -63,9 +63,14 @@ self.onmessage = (event) => {
   const starts = new Uint32Array(BUCKETS);
   for (let i = 1; i < BUCKETS; i++) starts[i] = starts[i - 1] + counts[i - 1];
 
-  // Back to front: the far end of the range is drawn first.
+  // Back to front. The key is d·p from row 2 of the VIEW matrix, which lookAt
+  // writes as -forward, so the key decreases with distance: the lowest bucket
+  // is the farthest gaussian and emitting ascending draws it first. That is
+  // what the premultiplied ONE / ONE_MINUS_SRC_ALPHA blend needs, since later
+  // fragments composite over earlier ones. The reversing form this replaces
+  // drew nearest-first and painted the background over the subject.
   const order = new Uint32Array(count);
-  for (let i = 0; i < count; i++) order[count - 1 - starts[depths[i]]++] = i;
+  for (let i = 0; i < count; i++) order[starts[depths[i]]++] = i;
 
   self.postMessage({ order }, [order.buffer]);
 };
@@ -216,7 +221,7 @@ function cross(a, b) {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
-function lookAt(eye, target, up) {
+export function lookAt(eye, target, up) {
   const f = normalise([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
   let s = cross(f, up);
   if (Math.hypot(s[0], s[1], s[2]) < 1e-6) s = cross(f, [0, 0, 1]);

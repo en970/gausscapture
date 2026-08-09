@@ -92,7 +92,13 @@ class _ShotRow extends StatelessWidget {
                   Text(preset.title, style: Fonts.bodyLarge),
                   const SizedBox(height: 2),
                   Text(
-                    preset.expectedToFail ? 'expected to fail' : preset.hint,
+                    preset.expectedToFail
+                        ? 'expected to fail'
+                        // A scripted take behaves differently enough to say so before it is
+                        // chosen: it runs itself, and it stops itself.
+                        : preset.scripted
+                            ? '${preset.phaseCount} phases · stops by itself'
+                            : preset.hint,
                     style: Fonts.body.copyWith(
                       color: preset.expectedToFail ? Palette.warn : Palette.muted,
                     ),

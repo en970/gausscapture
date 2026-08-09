@@ -30,6 +30,16 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
 
+      # tests/test_viewer_contract.py runs the shipped report/viewer_4d.js under
+      # Node against a real .g4d, because the browser reader is the one half of
+      # the container format Python cannot import and every way it can drift from
+      # the writer is silent. That test skips when Node is missing, so Node is
+      # requested explicitly rather than left to whatever the runner image
+      # happens to include -- a gate that silently skips is not a gate.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       # OpenCV's non-headless wheel links against system GL/glib, which the
       # Ubuntu runner image does not ship.
       - name: Install OpenCV system libraries
@@ -38,6 +48,19 @@ jobs:
 
       - name: Install
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      # The 4D trainer is the `train4d` extra, and its tests skip when torch is
+      # absent -- which, with `[dev]` alone, was every test that touches the
+      # training loop, the schedule, the densifier or the losses. A gate that
+      # silently skips is not a gate, so torch is installed explicitly.
+      #
+      # From the CPU index rather than the default one: the default Linux wheel
+      # bundles CUDA and is several gigabytes for kernels no runner can execute.
+      # gsplat is deliberately *not* installed -- it is CUDA-only, builds from
+      # source, and there is no GPU here to run it against; the reference
+      # rasterizer is what these tests exercise and is what it exists for.
+      - name: Install the CPU trainer stack
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.1"
 
       - name: Lint
         run: ruff check .
@@ -78,13 +101,20 @@ jobs:
           # the forbidden files only ever existed on the Colab VM and never in
           # this tree. Catching the clone is what catches that class.
           FORBIDDEN='diff_gaussian_rasterization|diff-gaussian-rasterization|simple-knn|simple_knn|LICENSE_gaussian_splatting|graphdeco-inria'
-          if grep -rIEl "$FORBIDDEN" \
-               --exclude-dir=.git \
-               --exclude-dir=node_modules \
-               --exclude-dir=docs \
-               --exclude-dir=site \
-               --exclude-dir=.github \
-               . ; then
+          # Search tracked files, not the working tree. The tree scan was a
+          # false-positive waiting to happen: gsplat -- Apache-2.0, and the
+          # rasterizer we are meant to be using -- names the Inria project
+          # inside an optional comparison wrapper it never calls. So any
+          # virtualenv, pip cache or build directory sitting in the checkout
+          # would fail a gate that is supposed to be about what *this
+          # repository ships*. Tracked files are exactly that set.
+          MATCHES=$(git ls-files -z -- . \
+                      ':(exclude)docs/' \
+                      ':(exclude)site/' \
+                      ':(exclude).github/' \
+                    | xargs -0 grep -IEl "$FORBIDDEN" || true)
+          if [ -n "$MATCHES" ]; then
+            echo "$MATCHES"
             echo "::error::A non-commercially licensed Gaussian splatting component was found."
             echo "The rasterizer must be gsplat (Apache-2.0). See docs/DEPENDENCIES.md."
             exit 1
@@ -105,3 +135,35 @@ jobs:
             echo "::error::A copyleft or non-commercial licence appeared in the bundled set."
             exit 1
           fi
+
+  capture-protocol:
+    name: capture protocol logic (JVM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # PhaseMachine, Stillness and Arc import nothing from Android on purpose,
+      # so the rules that decide when the phone is at rest, how far the sweep
+      # went and when the take stops itself can be checked without an emulator
+      # or an SDK. Each is a place where a wrong answer yields a take that looks
+      # fine on the phone and cannot be reconstructed afterwards -- "it worked
+      # when I tried it" is not evidence about any of them. The harness is a
+      # plain main() (see ProtocolLogicTest) precisely so this needs a JDK and
+      # two commands and nothing else.
+      - name: Compile and run ProtocolLogicTest
+        working-directory: app/android/app/src
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/gc-test
+          javac -d /tmp/gc-test \
+            main/java/com/gausscapture/capture/Preset.java \
+            main/java/com/gausscapture/capture/PhaseMachine.java \
+            main/java/com/gausscapture/capture/Stillness.java \
+            main/java/com/gausscapture/capture/Arc.java \
+            test/java/com/gausscapture/capture/ProtocolLogicTest.java
+          java -cp /tmp/gc-test com.gausscapture.capture.ProtocolLogicTest

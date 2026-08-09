@@ -1,0 +1,291 @@
+name: Release APK
+
+# Cuts a downloadable Android build. Pushing a tag is the whole trigger, so the
+# thing the site links to is always the product of a commit anyone can read,
+# built by a job anyone can read, rather than a file somebody uploaded from a
+# laptop. The site page at site/download.html shows a SHA-256; the last step
+# here is what writes it, which is why that number can be trusted to describe
+# the asset rather than to have been typed in next to it.
+#
+# workflow_dispatch runs everything except publishing: it builds, tests and
+# checksums, and leaves the APK as a workflow artifact. That exists so this file
+# can be changed without cutting a release to find out whether it still works.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Read by default. The one job that needs to write says so itself, below.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Pinned rather than "stable": a release asset should not change because the
+  # Flutter channel moved between two builds of the same source.
+  FLUTTER_VERSION: '3.41.5'
+  ASSET: gausscapture.apk
+
+jobs:
+  release:
+    name: build and publish
+    runs-on: ubuntu-latest
+
+    # contents: write is what creating a release and pushing the checksum back
+    # to site/download.html need. Nothing else is granted: no packages, no
+    # id-token, no pull-requests, no actions. A compromised step in this job can
+    # write to this repository and can do nothing anywhere else.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # PhaseMachine, Stillness and Arc import nothing from Android precisely so
+      # they can be tested on a plain JVM, and this is the only place that ever
+      # ran them. Each is a component where a wrong answer produces a take that
+      # looks fine and is not reconstructable, so a release that fails these
+      # checks is worse than no release.
+      - name: Capture protocol logic (plain JVM, no emulator)
+        working-directory: app/android/app/src
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/gc-test
+          javac -d /tmp/gc-test \
+            main/java/com/gausscapture/capture/Preset.java \
+            main/java/com/gausscapture/capture/PhaseMachine.java \
+            main/java/com/gausscapture/capture/Stillness.java \
+            main/java/com/gausscapture/capture/Arc.java \
+            test/java/com/gausscapture/capture/ProtocolLogicTest.java
+          java -cp /tmp/gc-test com.gausscapture.capture.ProtocolLogicTest
+
+      # Cloned from Flutter's own repository at a fixed tag rather than pulled in
+      # through a third-party setup action. The only code this workflow executes
+      # that is not in this repository then comes from github.com/actions and
+      # github.com/flutter, both at versions written down here.
+      - name: Install Flutter ${{ env.FLUTTER_VERSION }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$FLUTTER_VERSION" \
+            https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Flutter and Android are ready
+        run: |
+          set -euo pipefail
+          flutter --version
+          yes | flutter doctor --android-licenses > /dev/null || true
+          flutter doctor -v
+
+      - name: Analyse
+        working-directory: app
+        run: |
+          set -euo pipefail
+          flutter pub get
+          flutter analyze
+
+      - name: Build release APK
+        working-directory: app
+        run: flutter build apk --release
+
+      # The Gradle release build signs with whatever debug keystore the machine
+      # happens to have, and a runner generates a fresh one every time -- which
+      # would mean every release was signed by a different key and Android
+      # refused to install any of them over the last. Re-signing here with a key
+      # held as a repository secret is what makes updates work. apksigner
+      # replaces the existing signature rather than adding to it, so this needs
+      # no change to build.gradle.kts.
+      #
+      # Without the secret the build still ships, and the release notes say
+      # plainly that it is signed with a throwaway key, because a user who is
+      # not told will meet the signature error with no idea what caused it.
+      - name: Sign with the release key, if one is configured
+        id: sign
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BUILT=app/build/app/outputs/flutter-apk/app-release.apk
+          BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "signed=debug" >> "$GITHUB_OUTPUT"
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret; shipping a build signed with an ephemeral debug key. Installing it over a previous release will fail with a signature error."
+            cp "$BUILT" "$ASSET"
+          else
+            echo "signed=release" >> "$GITHUB_OUTPUT"
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+            "$BUILD_TOOLS/zipalign" -p -f 4 "$BUILT" "$RUNNER_TEMP/aligned.apk"
+            "$BUILD_TOOLS/apksigner" sign \
+              --ks "$RUNNER_TEMP/upload.jks" \
+              --ks-pass "env:KEYSTORE_PASSWORD" \
+              --ks-key-alias "$KEY_ALIAS" \
+              --key-pass "env:KEY_PASSWORD" \
+              --out "$ASSET" \
+              "$RUNNER_TEMP/aligned.apk"
+            rm -f "$RUNNER_TEMP/upload.jks"
+          fi
+
+          # The certificate digest goes in the release notes so a reader can
+          # confirm that two releases came from the same signer, which the file
+          # checksum on its own can never tell them.
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$ASSET" \
+            | tee /tmp/certs.txt
+          CERT="$(grep -i 'SHA-256 digest' /tmp/certs.txt | head -1 | awk '{print $NF}')"
+          echo "cert=${CERT:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Checksum
+        id: sum
+        run: |
+          set -euo pipefail
+          # Written in the format `shasum -a 256 -c` and `sha256sum -c` both
+          # read, so a reader can verify with one command instead of comparing
+          # 64 characters by eye.
+          sha256sum "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
+          BYTES=$(stat -c%s "$ASSET")
+          {
+            echo "sha256=$(cut -d' ' -f1 < "$ASSET.sha256")"
+            echo "bytes=$BYTES"
+            echo "mb=$(awk -v b="$BYTES" 'BEGIN{printf "%.1f", b/1000000}')"
+            echo "date=$(date -u +%Y-%m-%d)"
+          } >> "$GITHUB_OUTPUT"
+
+      # The dry run stops here: artefact, no release, no commit.
+      - name: Upload as a workflow artifact (dry run only)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gausscapture-apk
+          path: |
+            gausscapture.apk
+            gausscapture.apk.sha256
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          SIGNED: ${{ steps.sign.outputs.signed }}
+          CERT: ${{ steps.sign.outputs.cert }}
+          SHA256: ${{ steps.sum.outputs.sha256 }}
+          MB: ${{ steps.sum.outputs.mb }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## GaussCapture for Android — \`$TAG\`"
+            echo
+            echo "\`$ASSET\` · ${MB} MB · Android 9.0 (API 28) and newer · arm64-v8a, armeabi-v7a and x86_64 in one file."
+            echo
+            echo '```'
+            echo "SHA-256  $SHA256"
+            echo '```'
+            echo
+            echo "Verify before installing:"
+            echo
+            echo '```sh'
+            echo "shasum -a 256 -c $ASSET.sha256      # macOS, Linux"
+            echo "certutil -hashfile $ASSET SHA256    # Windows"
+            echo '```'
+            echo
+            if [ "$SIGNED" = "release" ]; then
+              echo "Signing certificate SHA-256: \`$CERT\`. Every release is signed with this key; if a future release shows a different digest, do not install it."
+            else
+              echo "**Signed with an ephemeral debug key.** No release keystore is configured for this repository yet, so this build cannot be installed over a previous one — uninstall the old copy first. Certificate SHA-256: \`$CERT\`."
+            fi
+            echo
+            echo "Android will ask permission to install an app from outside the Play Store. That prompt, the four-phase capture and the bounded view cone are all explained on the [download page](https://en970.github.io/gausscapture/download.html)."
+          } > notes.md
+
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "GaussCapture $TAG" --notes-file notes.md
+          gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+
+      # The site shows the checksum so a reader sees it before downloading
+      # anything. Writing it from here is what keeps that number honest: it is
+      # produced by the same step that produced the file, not transcribed.
+      #
+      # This is deliberately last and deliberately non-fatal. The release and
+      # its .sha256 sidecar are the authoritative artefacts and they already
+      # exist by this point; a push that loses a race with another commit to the
+      # default branch, or a protected branch that refuses this bot, must not
+      # turn a successful release red. Re-run the job, or edit the marker block
+      # by hand.
+      - name: Publish the checksum to the site
+        if: startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        # Everything variable arrives through env rather than being interpolated
+        # into the script body, so nothing from the event context is ever parsed
+        # as shell.
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA256: ${{ steps.sum.outputs.sha256 }}
+          BYTES: ${{ steps.sum.outputs.bytes }}
+          DATE: ${{ steps.sum.outputs.date }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$DEFAULT_BRANCH" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+            "$RUNNER_TEMP/site"
+
+          python3 - "$RUNNER_TEMP/site/site/download.html" <<'PY'
+          import os, re, sys
+
+          path = sys.argv[1]
+          html = open(path, encoding="utf-8").read()
+
+          # Everything between the two markers is replaced wholesale, so the
+          # pending state and the published state need not resemble each other.
+          block = (
+              '      <!-- SHA256:BEGIN -->\n'
+              '      <p class="sum">\n'
+              '        <span class="label">SHA-256 · gausscapture.apk · {tag} · {date} · {bytes} bytes</span>\n'
+              '        {sha}\n'
+              '      </p>\n'
+              '      <!-- SHA256:END -->'
+          ).format(
+              tag=os.environ["TAG"],
+              date=os.environ["DATE"],
+              bytes=f'{int(os.environ["BYTES"]):,}',
+              sha=os.environ["SHA256"],
+          )
+
+          new, n = re.subn(
+              r'      <!-- SHA256:BEGIN -->.*?<!-- SHA256:END -->',
+              lambda _m: block,
+              html,
+              flags=re.S,
+          )
+          if n != 1:
+              sys.exit(f"expected exactly one SHA256 marker block, found {n}")
+          open(path, "w", encoding="utf-8").write(new)
+          PY
+
+          cd "$RUNNER_TEMP/site"
+          if git diff --quiet; then
+            echo "site/download.html already carries this checksum."
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add site/download.html
+          git commit -m "site: publish the $TAG APK checksum"
+          git push origin "HEAD:$DEFAULT_BRANCH"

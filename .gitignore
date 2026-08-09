@@ -33,3 +33,14 @@ app/.dart_tool/
 app/android/.gradle/
 app/android/local.properties
 app/.flutter-plugins-dependencies
+
+# Release signing material. The keystore and its passwords must never be
+# committed: with them, anyone can sign an update Android accepts as ours.
+# Keep a backup somewhere safe -- losing the keystore means never being able
+# to update an installed copy of the app again.
+app/android/key.properties
+app/android/*.jks
+*.keystore
+
+# pytest --cov leaves this behind on every run.
+.coverage

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import subprocess
@@ -29,6 +30,89 @@ def trainer_status(settings: Settings | None = None) -> dict[str, Any]:
         "path": str(path) if path else "",
         "entrypoint": str(entry) if entry else "",
         "usable": bool(entry),
+    }
+
+
+def deform_trainer_status(probe_cuda: bool = True) -> dict[str, Any]:
+    """Report whether the in-tree 4D trainer can run on this machine.
+
+    The 4D trainer is not an external process -- it lives in
+    :mod:`gausscapture.recon.deform` -- but ``doctor`` should ask one module
+    "what is the training situation here", so it is reported alongside the
+    external one.
+
+    ``cuda`` is ``None`` rather than ``False`` when torch is absent, because
+    "no CUDA" and "we could not look" are different answers and a laptop that
+    reports the first about a machine it never inspected is lying. Probing it
+    costs a torch import (seconds), so it is skippable.
+    """
+    import importlib.util
+
+    def installed(module: str) -> bool:
+        return importlib.util.find_spec(module) is not None
+
+    torch_ok = installed("torch")
+    gsplat_ok = installed("gsplat")
+    scipy_ok = installed("scipy")
+
+    cuda: bool | None = None
+    torch_version = ""
+    if torch_ok and probe_cuda:
+        with contextlib.suppress(Exception):
+            import torch
+
+            torch_version = str(torch.__version__)
+            cuda = bool(torch.cuda.is_available())
+
+    # Whether gsplat's own MCMC densifier could be constructed here. Asked only
+    # where gsplat is installed, because asking costs the import. The 4D trainer
+    # does not use it -- see `schedule.gsplat_strategy_available` for why the
+    # plain-PyTorch densifier is the one that runs on CUDA too -- so this is
+    # reported rather than acted on, and `doctor` is where a fact about the
+    # machine belongs.
+    gsplat_mcmc: bool | None = None
+    if gsplat_ok and torch_ok:
+        with contextlib.suppress(Exception):
+            from gausscapture.recon.deform.schedule import gsplat_strategy_available
+
+            gsplat_mcmc = gsplat_strategy_available()
+
+    if not torch_ok:
+        note = (
+            "torch is not installed, so `train4d` cannot run here. That is the expected "
+            "state on an Apple Silicon laptop: package with `gausscapture colab4d` and "
+            "train on a cloud GPU."
+        )
+    elif not gsplat_ok:
+        note = (
+            "torch is present but gsplat is not, so only the CPU reference rasterizer is "
+            "available -- correct, and far too slow for a real scene. `pip install "
+            "'gausscapture[train4d]'`."
+        )
+    elif cuda is False:
+        note = (
+            "gsplat is installed but no CUDA device is visible; its kernels are CUDA-only, "
+            "so training here would fall back to the CPU reference rasterizer."
+        )
+    elif cuda is None:
+        note = "torch and gsplat are installed; CUDA was not probed."
+    else:
+        note = "torch, gsplat and CUDA are all present; `train4d` can run here."
+
+    return {
+        "torch": torch_ok,
+        "torch_version": torch_version,
+        "gsplat": gsplat_ok,
+        # None means "not asked", which on a machine with no gsplat is the only
+        # honest answer -- the same distinction `cuda` makes.
+        "gsplat_mcmc": gsplat_mcmc,
+        "scipy": scipy_ok,
+        "cuda": cuda,
+        # Runnable at all: the reference rasterizer needs nothing but torch.
+        "usable": torch_ok,
+        # Runnable at a useful speed on a real scene.
+        "gpu_usable": bool(torch_ok and gsplat_ok and cuda),
+        "note": note,
     }
 
 

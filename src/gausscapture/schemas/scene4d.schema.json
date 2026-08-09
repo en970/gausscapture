@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/en970/gausscapture/main/src/gausscapture/schemas/scene4d.schema.json",
+  "title": "4D viewer scene sidecar",
+  "description": "The scene.json the 4D viewer page reads. It exists so that the numbers the page prints -- the cone, the counts, whether the fixed pose was verified, whether the scene was truncated to fit a budget -- are validated data rather than strings assembled in a template. Everything here is also recoverable from the .g4d header; the sidecar is what lets a page state it before the binary has finished downloading.",
+  "type": "object",
+  "required": ["title", "gaussian_count", "frame_count", "fps", "cone", "fixed_pose"],
+  "additionalProperties": true,
+  "properties": {
+    "title": { "type": "string" },
+    "file": {
+      "type": ["string", "null"],
+      "description": "The .g4d beside this file, or null when the page has it inlined."
+    },
+    "bytes": { "type": "integer", "minimum": 0 },
+    "gaussian_count": { "type": "integer", "minimum": 1 },
+    "dynamic_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Gaussians bound to the deformation scaffold. They come first in the file."
+    },
+    "node_count": { "type": "integer", "minimum": 1, "maximum": 256 },
+    "frame_count": { "type": "integer", "minimum": 1 },
+    "skin_k": { "type": "integer", "minimum": 1, "maximum": 4 },
+    "fps": { "type": "number", "exclusiveMinimum": 0 },
+    "clip_seconds": { "type": "number", "minimum": 0 },
+    "chunk_bytes": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 },
+      "description": "Bytes per .g4d chunk, so a page can say what the motion actually cost."
+    },
+    "cone": {
+      "type": "object",
+      "required": ["azimuth_deg", "elevation_deg", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "azimuth_deg": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Half-angle. The camera is hard clamped to this, and it is measured from the solved arc cameras rather than asserted."
+        },
+        "elevation_deg": { "type": "number", "minimum": 0 },
+        "source": {
+          "type": "string",
+          "enum": ["measured", "measured_capped_by_imu", "asserted", "synthetic"],
+          "description": "Where the half-angles came from. Anything other than measured means the number is weaker than it looks, and the page says so."
+        }
+      }
+    },
+    "fixed_pose": {
+      "type": "object",
+      "required": ["source"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["verified", "asserted", "synthetic"],
+          "description": "verified means the pose was confirmed against masked hold keyframes. asserted means registration failed and the pose was inherited from the rest-window cameras without confirmation -- which the viewer must surface, not bury."
+        },
+        "residual_px": { "type": ["number", "null"], "minimum": 0 },
+        "spread_deg": { "type": ["number", "null"], "minimum": 0 },
+        "spread_px": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "loop": {
+      "type": "string",
+      "enum": ["ping-pong", "forward", "once"],
+      "default": "ping-pong",
+      "description": "A one-to-three second clip is not cyclic, so a forward loop cuts visibly. ping-pong is the honest default and the transport says which is on."
+    },
+    "rate": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 0.5,
+      "description": "Initial playback rate. Below one by default because a one-second clip at 1x is over before a user finishes a single camera drag."
+    },
+    "truncated": {
+      "type": "boolean",
+      "default": false,
+      "description": "The export dropped gaussians to fit a budget. If true the page must say so: the scene on screen is not the scene that was trained."
+    },
+    "trained_gaussian_count": { "type": "integer", "minimum": 1 },
+    "caveat": {
+      "type": "string",
+      "description": "One sentence about what lies outside the cone. Required in spirit: the page prints it verbatim."
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Any quality number carried here is temporal hold-out only -- it measures motion interpolation between observed frames, never novel-view synthesis, because a fixed camera has no held-out view to score.",
+      "properties": {
+        "temporal_holdout_psnr": { "type": ["number", "null"] },
+        "measures": { "type": "string" }
+      }
+    }
+  }
+}

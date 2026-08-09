@@ -67,6 +67,7 @@ def run_colmap(
     camera_model: str = "OPENCV",
     seed_intrinsics: bool = False,
     refine_intrinsics: bool = True,
+    mask_path: Path | None = None,
 ) -> PoseReport:
     """Run feature extraction, matching, and mapping.
 
@@ -100,6 +101,17 @@ def run_colmap(
     Note this tests *intrinsic* seeding only. Seeding *poses* from ARCore is a
     far stronger prior and remains untested, because the capture app does not
     record them yet.
+
+    ``mask_path`` points at a directory of per-image feature masks, which is how
+    the fixed-camera 4D path gets one reconstruction out of a recording that
+    contains both rigid and moving geometry. COLMAP looks for
+    ``<mask_path>/<image file name>.png`` and ignores every pixel that is zero
+    there; an image with no file in the directory is used in full. That
+    asymmetry is the whole trick: the sweep frames enter unmasked, the frames
+    from the dynamic phase enter with the moving subject blacked out, and
+    everything lands in one model with one shared camera. See
+    ``recon.dynamic_mask`` for the polarity, which is the opposite of the masks
+    the trainer consumes.
     """
     settings = settings or get_settings()
     progress = progress or NullProgress()
@@ -142,6 +154,15 @@ def run_colmap(
         "--ImageReader.camera_model",
         camera_model,
     ]
+    if mask_path is not None:
+        mask_path = Path(mask_path).resolve()
+        if not mask_path.is_dir():
+            raise PipelineStateError(
+                f"Feature mask directory does not exist: {mask_path}. Measure the dynamic "
+                "region before running pose estimation on a fixed-camera capture."
+            )
+        extractor += ["--ImageReader.mask_path", str(mask_path)]
+        progress.log(f"Masking features from {len(list(mask_path.glob('*.png')))} images")
     if intrinsics is not None:
         extractor += ["--ImageReader.camera_params", intrinsics.colmap_camera_params()]
         progress.log(
