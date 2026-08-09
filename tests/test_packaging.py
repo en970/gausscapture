@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+import gausscapture
+
 # tomllib arrived in 3.11 and this project supports 3.10, where reading
 # pyproject.toml directly is simply not available without a dependency. Rather
 # than add one for a single test, the 3.10 path falls back to the installed
@@ -216,3 +218,26 @@ class TestTheCapturePackSchema:
         # producer existing beside a caller that ignores it.
         engine = (capture / "CaptureEngine.java").read_text(encoding="utf-8")
         assert "achievedLocks()" in engine
+
+
+class TestTheVersionIsOneNumber:
+    """``__version__`` and the packaging metadata are two copies of one fact.
+
+    They drift silently: ``pyproject.toml`` gets bumped for a release, the
+    literal in ``__init__.py`` does not, and ``gausscapture --version`` then
+    reports the previous release for the rest of that version's life. The CLI
+    prints this string and CI asserts on it, so a stale copy is a wrong answer
+    given confidently.
+    """
+
+    def test_the_literal_matches_the_installed_distribution(self):
+        assert gausscapture.__version__ == metadata.version("gausscapture"), (
+            f"src/gausscapture/__init__.py says {gausscapture.__version__} and the installed "
+            f"distribution says {metadata.version('gausscapture')}; bump both, then reinstall "
+            "with `pip install -e .` so the metadata catches up."
+        )
+
+    @pytest.mark.skipif(tomllib is None, reason="reading pyproject.toml needs tomllib (3.11+)")
+    def test_the_literal_matches_pyproject(self):
+        data = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+        assert gausscapture.__version__ == data["project"]["version"]

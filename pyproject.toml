@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gausscapture"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first phone capture for 3D Gaussian splatting, with capture-time quality telemetry"
 readme = "README.md"
 requires-python = ">=3.10"

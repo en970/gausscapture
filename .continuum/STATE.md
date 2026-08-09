@@ -1,26 +1,21 @@
 # Şu an
 
-Şüpheci sondanın bulguları kapatıldı; sıra bunların gerçekten tuttuğunu **torch'suz temiz
-bir sanal ortamda** kanıtlamakta — CI'ın kurduğu ortam bu ve daha önce orada sıfır test
-çalışıyordu.
+Kod GitHub'da ve **CI tamamen yeşil** (altı job: licence gate, JVM protokol testleri, dört
+Python matrisi). Site yayında: https://en970.github.io/gausscapture/ . Geriye release
+kalması.
 
 # Sıradaki adım
 
-Temiz bir venv kur ve CI ortamını birebir taklit et:
+**Kullanıcıya sorulan karar bekleniyor:** APK'yi GitHub Actions mı build edip imzalasın
+(imza anahtarı şifreli Secret olarak yüklenir, `release.yml` zaten bunun için yazılmış ve
+site checksum'ını kendisi günceller), yoksa yerelde imzalanmış APK mi elle yüklensin
+(anahtar makineden çıkmaz, ama tag atmak `release.yml`'yi tetikleyip debug anahtarlı bir
+APK üretip üzerine yazar — o yüzden bu yol seçilirse workflow'un tetikleyicisi
+değiştirilmeli).
 
-    python3 -m venv /tmp/gc-ci && /tmp/gc-ci/bin/pip install -e ".[dev]"
-    /tmp/gc-ci/bin/python -m pytest -q
-
-Beklenen: toplama (collection) çökmüyor, torch gerektiren testler `skipped`, geri kalanı
-`passed`. Şüpheci ajan bu ortamda daha önce `3 failed, 348 passed, 1 skipped, 17 errors`
-ölçmüştü; hata kaynağı `tests/test_pipeline4d.py`'nin `prepared`/`packaged`/`trained`
-fixture'larının `deform/bundle.py:32`'deki modül seviyesi `import torch`'a ulaşmasıydı.
-`prepare4d.py:62` artık torch'suz `deform.init4d` kullanıyor; doğrulanacak olan, aynı
-yolun `bundle.py` üzerinden hâlâ torch'a düşüp düşmediği.
-
-Sonrasında sırasıyla: APK'yi son kodla yeniden build + `apksigner` doğrulaması, commit +
-push, CI'ın yeşile döndüğünü izleme, GitHub Release + APK asset, `site/` checksum
-güncellemesi, Pages yayını.
+Cevap geldikten sonra: release'i kes, APK + `.sha256` asset'lerini yükle, sitedeki
+`SHA256:BEGIN/END` bloğunun dolduğunu doğrula, sonra APK'yi telefona kur ve kullanıcı
+çekim yapsın.
 
 # Tamamlananlar
 
