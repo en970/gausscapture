@@ -37,9 +37,10 @@ statik bir sayfa bunu checksum'ıyla birlikte sunacak.
 
 # Sınırlar
 
-- **Lisans:** `diff_gaussian_rasterization`, `diff-gaussian-rasterization`, `simple-knn`,
-  `simple_knn`, `LICENSE_gaussian_splatting`, `graphdeco-inria` dizgeleri `docs/`, `site/`,
-  `.github/` dışında hiçbir **takip edilen** dosyada geçemez. Rasterizer gsplat (Apache-2.0).
+- **Lisans:** Inria'nın ticari olmayan 3DGS bileşenlerinin adları (tam liste
+  `.github/workflows/ci.yml` içindeki `FORBIDDEN` deseninde ve `docs/DEPENDENCIES.md`'de)
+  `docs/`, `site/`, `.github/` dışında hiçbir **takip edilen** dosyada geçemez — bu dosya
+  dahil, ki nitekim ilk yazımında geçtiği için CI'ı kırdı. Rasterizer gsplat (Apache-2.0).
 - **Dürüstlük:** Sabit kameradan sınırsız serbest bakış vaat eden hiçbir metin yazılmayacak —
   kod yorumu, docs, site, viewer arayüzü dahil. ±25° koni ürünün kendisidir.
 - **Keystore:** `app/android/gausscapture-release.jks` ve `key.properties` asla commit edilmez.

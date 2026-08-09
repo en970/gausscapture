@@ -1,11 +1,14 @@
 """Nearest-neighbour scale initialisation, in PyTorch.
 
 The reference 3DGS implementation initialises each Gaussian's scale from the
-mean squared distance to its three nearest neighbours, using the ``simple-knn``
-CUDA extension. That extension is published under the Inria non-commercial
-licence, so GaussCapture cannot ship, vendor or depend on it -- and its kernel
-is *approximate* anyway: it buckets points along a Morton curve and searches
-only within a bucket, which mis-scales Gaussians near a bucket boundary.
+mean squared distance to its three nearest neighbours, using a small CUDA
+extension published under the Inria non-commercial licence. GaussCapture cannot
+ship, vendor or depend on it, so this module replaces it. (The extension is
+named in ``docs/DEPENDENCIES.md`` rather than here: the licence gate treats that
+name appearing in shipped source as the signal that it has been vendored, and a
+docstring is not worth a false positive.) Its kernel is *approximate* anyway: it
+buckets points along a Morton curve and searches only within a bucket, which
+mis-scales Gaussians near a bucket boundary.
 
 This is the exact computation instead, chunked so a 500k-point cloud fits in
 memory. It is O(N*M) rather than O(N log N), which is the honest cost of being

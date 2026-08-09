@@ -21,10 +21,21 @@ from __future__ import annotations
 import importlib.metadata as metadata
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
-import tomllib
+
+# tomllib arrived in 3.11 and this project supports 3.10, where reading
+# pyproject.toml directly is simply not available without a dependency. Rather
+# than add one for a single test, the 3.10 path falls back to the installed
+# distribution's own metadata -- a weaker source, because it describes the last
+# install rather than the file on disk, but one that still catches an extra a
+# message promises and the package does not provide.
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised only on the 3.10 leg of the CI matrix
+    tomllib = None
 
 REPO = Path(__file__).resolve().parents[1]
 SRC = REPO / "src" / "gausscapture"
@@ -36,6 +47,8 @@ _EXTRA = re.compile(r"gausscapture\[([a-z0-9,_\-]+)\]")
 
 def declared_extras() -> set[str]:
     """What ``pyproject.toml`` declares -- the source a wheel is built from."""
+    if tomllib is None:
+        return set(metadata.metadata("gausscapture").get_all("Provides-Extra") or [])
     data = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
     return set(data["project"].get("optional-dependencies", {}))
 
@@ -64,6 +77,7 @@ class TestExtras:
                 f"pip warns and installs the bare package. Declared: {sorted(declared)}"
             )
 
+    @pytest.mark.skipif(tomllib is None, reason="reading pyproject.toml needs tomllib (3.11+)")
     def test_the_training_extra_carries_the_things_the_trainer_imports(self):
         """torch runs the loop, gsplat is the only rasterizer we may ship, scipy is reported."""
         data = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
