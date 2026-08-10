@@ -169,14 +169,36 @@ class TestPullCapture:
         # The staging directory must not survive either.
         assert list(tmp_path.iterdir()) == []
 
-    def test_refuses_to_overwrite(self, phone, tmp_path):
+    def test_refuses_to_overwrite_a_destination_that_holds_anything(self, phone, tmp_path):
+        phone(FakePhone({"take": FULL}))
+        capture = pull.list_captures()[0]
+        destination = tmp_path / "capturepack"
+        destination.mkdir()
+        (destination / "manifest.json").write_text("{}", encoding="utf-8")
+
+        with pytest.raises(GaussCaptureError, match="already exists"):
+            pull.pull_capture(capture, destination)
+        # And it is still there: a refusal that deleted the thing it refused to
+        # overwrite would be worse than the overwrite.
+        assert (destination / "manifest.json").read_text(encoding="utf-8") == "{}"
+
+    def test_accepts_an_empty_destination(self, phone, tmp_path):
+        """`gausscapture pull` creates the project first, and that lays down `capturepack`.
+
+        Treating the empty directory as a conflict made the command impossible to run: every
+        capture raised, and the caller counted it as "already here" for a phone whose captures
+        had never been copied.
+        """
         phone(FakePhone({"take": FULL}))
         capture = pull.list_captures()[0]
         destination = tmp_path / "capturepack"
         destination.mkdir()
 
-        with pytest.raises(GaussCaptureError, match="already exists"):
-            pull.pull_capture(capture, destination)
+        pull.pull_capture(capture, destination)
+
+        # Landed at the destination itself, not nested one level inside it.
+        assert (destination / "manifest.json").exists()
+        assert not (destination / "take").exists()
 
     def test_rejects_an_arrival_missing_required_files(self, phone, tmp_path, monkeypatch):
         fake = phone(FakePhone({"take": FULL}))

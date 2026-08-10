@@ -206,7 +206,18 @@ def pull_capture(
     progress = progress or NullProgress()
     destination = Path(destination)
     if destination.exists():
-        raise GaussCaptureError(f"{destination} already exists")
+        # An empty directory here is not a conflict, and refusing one made this
+        # command impossible to run: `gausscapture pull` creates the project
+        # first, and ProjectStore.create() lays down the whole skeleton --
+        # `capturepack` among it. So the destination always existed by the time
+        # we got here, every capture raised, and the caller reported "already
+        # here" for a phone whose captures had never been copied at all.
+        # A directory with something in it is still a genuine conflict.
+        if any(destination.iterdir()):
+            raise GaussCaptureError(f"{destination} already exists")
+        # Removed rather than moved into: shutil.move onto an existing directory
+        # nests the source inside it, which would bury the pack one level down.
+        destination.rmdir()
 
     # Staged alongside the destination rather than in the system temp
     # directory, so the final move is a rename within one filesystem instead of
