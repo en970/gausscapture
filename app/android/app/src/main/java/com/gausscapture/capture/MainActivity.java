@@ -65,9 +65,22 @@ public final class MainActivity extends FlutterActivity implements CaptureEngine
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
+        // The engine is built before the super call, and the order is load-bearing.
+        // FlutterActivity invokes configureFlutterEngine() from inside
+        // super.onCreate(), and that is where the preview factory is registered --
+        // so an engine constructed after the super call arrives too late. The
+        // factory then held null for the life of the process, and the first time
+        // Flutter asked it for the preview view it threw NullPointerException: no
+        // platform view, no camera, no sensor stream. On the phone that reads as
+        // "the camera does not work", with a black frame and a diagnostics line of
+        // zeroes, which is a long way from the actual cause.
+        //
+        // The constructor only reads system services and shared preferences, and
+        // both are available as soon as the base context is attached -- which is
+        // before onCreate runs at all.
         engine = new CaptureEngine(this);
         engine.setEvents(this);
+        super.onCreate(savedInstanceState);
 
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, PERMISSION_REQUEST);
@@ -133,6 +146,10 @@ public final class MainActivity extends FlutterActivity implements CaptureEngine
                     result.success(manifest == null ? null : toMap(manifest));
                     break;
                 }
+
+                case "nudgePreviewTurn":
+                    result.success(engine.nudgePreviewTurn());
+                    break;
 
                 case "setPreset":
                     engine.setPreset(call.argument("id"));

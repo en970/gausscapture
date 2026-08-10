@@ -5,10 +5,16 @@ import '../design.dart';
 
 /// Choosing which protocol this take follows.
 ///
-/// Two of the five shots are *meant* to fail, and they are labelled as such in amber rather than
+/// Some of the shots are *meant* to fail, and they are labelled as such in amber rather than
 /// hidden. That is the scientific point: a model that predicts capture quality has to be trained
 /// on captures that went wrong, so recording bad ones deliberately is part of the protocol and
 /// should read as intentional rather than as a mistake about to be made.
+///
+/// The list scrolls, and that is not a detail. `showModalBottomSheet` caps an unconstrained child
+/// at half the screen height, and a `Column` past its bounds overflows rather than scrolling — so
+/// once a sixth protocol was added, the sixth row sat below the fold with no way to reach it. The
+/// sixth is `F_bullet`, the fixed-camera 4D capture, which meant the whole 4D path shipped and
+/// could never be selected on the phone. A picker must be able to show every option it has.
 Future<String?> showShotPicker(
   BuildContext context,
   CaptureEngine engine,
@@ -20,31 +26,51 @@ Future<String?> showShotPicker(
   return showModalBottomSheet<String>(
     context: context,
     backgroundColor: Palette.raised,
+    isScrollControlled: true,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
     ),
     builder: (context) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: Space.md),
-          Container(
-            width: 36,
-            height: 4,
-            decoration: BoxDecoration(
-              color: Palette.hairline,
-              borderRadius: BorderRadius.circular(2),
+      child: ConstrainedBox(
+        // Tall enough for every protocol, short enough that the sheet still
+        // reads as a sheet rather than a screen.
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.85,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: Space.md),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Palette.hairline,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-          ),
-          const SizedBox(height: Space.gutter),
-          for (final preset in presets)
-            _ShotRow(
-              preset: preset,
-              selected: preset.id == current,
-              onTap: () => Navigator.of(context).pop(preset.id),
+            const SizedBox(height: Space.gutter),
+            // The handle stays put; only the protocols move. Dragging a list
+            // that carries its own grab handle away feels like the sheet is
+            // closing.
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final preset in presets)
+                      _ShotRow(
+                        preset: preset,
+                        selected: preset.id == current,
+                        onTap: () => Navigator.of(context).pop(preset.id),
+                      ),
+                    const SizedBox(height: Space.sm),
+                  ],
+                ),
+              ),
             ),
-          const SizedBox(height: Space.sm),
-        ],
+          ],
+        ),
       ),
     ),
   );

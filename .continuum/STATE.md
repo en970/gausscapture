@@ -1,21 +1,43 @@
 # Şu an
 
-Kod GitHub'da ve **CI tamamen yeşil** (altı job: licence gate, JVM protokol testleri, dört
-Python matrisi). Site yayında: https://en970.github.io/gausscapture/ . Geriye release
-kalması.
+**v0.3.0 yayında.** CI altı job'da yeşil, release kesildi, APK ve checksum GitHub'da,
+site canlı ve checksum'ı otomatik doldu. Geriye tek şey kaldı: APK'yi telefona kurmak.
 
 # Sıradaki adım
 
-**Kullanıcıya sorulan karar bekleniyor:** APK'yi GitHub Actions mı build edip imzalasın
-(imza anahtarı şifreli Secret olarak yüklenir, `release.yml` zaten bunun için yazılmış ve
-site checksum'ını kendisi günceller), yoksa yerelde imzalanmış APK mi elle yüklensin
-(anahtar makineden çıkmaz, ama tag atmak `release.yml`'yi tetikleyip debug anahtarlı bir
-APK üretip üzerine yazar — o yüzden bu yol seçilirse workflow'un tetikleyicisi
-değiştirilmeli).
+**Önizleme oryantasyonu çözülmedi — tek kalan engel bu.** APK telefonda kurulu ve kamera
+çalışıyor, ama görüntü 90° yanlış yönde. `CameraController.applyTransform()` içinde
+denenenler ve kullanıcının gördüğü:
 
-Cevap geldikten sonra: release'i kes, APK + `.sha256` asset'lerini yükle, sitedeki
-`SHA256:BEGIN/END` bloğunun dolduğunu doğrula, sonra APK'yi telefona kur ve kullanıcı
-çekim yapsın.
+| # | rotate | bufferRect | sonuç |
+|---|---|---|---|
+| 1 | +90 | normal | yan |
+| 2 | -90 | normal | yan (1'e göre 180° dönük) |
+| 3 | 0 | normal | karanlık kare, doğrulanamadı |
+| 4 | +90 | takaslı (Google Camera2Basic biçimi) | **şu an kurulu, geri bildirim bekleniyor** |
+
+Kanıtlanmış olan: `TextureView.setTransform` bu barındırma modunda **yok sayılmıyor** —
+matrise geçici olarak `postScale(0.5)` konduğunda önizleme ekranın ortasında dik ve doğru
+oranlı bir dikdörtgene indi. Yani sorun matrisin uygulanmaması değil, içeriğinin yanlış
+olması.
+
+4 de çözmezse sıradaki yol: TextureView matrisini kimliğe indirip döndürmeyi Flutter
+tarafında yapmak — `app/lib/screens/capture_screen.dart:651` içindeki çıplak `AndroidView`
+şu an `Stack(fit: StackFit.expand)` içinde tam ekrana zorlanıyor; `RotatedBox` +
+`AspectRatio` ile sarmak oryantasyonu platform view barındırmasından bağımsız kılar.
+
+Bundan sonra: dört fazlı çekim (perch → arc → reseat → hold), `pull`, `prep4d`, Colab'da
+`train4d`, `export4d`, `viewer4d`.
+
+# Yayınlananlar
+
+- Release: https://github.com/en970/gausscapture/releases/tag/v0.3.0
+  `gausscapture.apk` 45.546.529 bayt, `gausscapture.apk.sha256`
+- SHA-256: `a0d5229a60be7f30753f61ae9c870b96172c349b35ab5e8ee62786cd1a5f2ddd`
+- Site: https://en970.github.io/gausscapture/ ve `/download.html`
+- APK'yi GitHub Actions build edip **bizim release anahtarımızla** imzaladı; sertifika
+  parmak izi yerel keystore'unkiyle aynı (`cb7feebe…`), indirilip `apksigner` ile
+  doğrulandı.
 
 # Tamamlananlar
 

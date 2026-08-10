@@ -210,6 +210,9 @@ public final class CameraController {
         this.view = view;
         this.manager = manager;
         this.listener = listener;
+        this.cameraThread = new android.os.HandlerThread("gausscapture-camera");
+        this.cameraThread.start();
+        this.handler = new android.os.Handler(this.cameraThread.getLooper());
     }
 
     public int frameCount() {
@@ -380,11 +383,38 @@ public final class CameraController {
         }
     }
 
-    private android.os.Handler handler;
-
-    public void setHandler(android.os.Handler handler) {
-        this.handler = handler;
+    /**
+     * Release the callback thread as well. Unlike {@link #close()}, which the engine calls between
+     * takes and expects to reopen from, this ends the controller: it cannot be used afterwards.
+     */
+    public void dispose() {
+        close();
+        cameraThread.quitSafely();
     }
+
+    /**
+     * Where Camera2 delivers session state and per-frame metadata.
+     *
+     * <p>The controller owns this thread rather than being handed one. It used to have a
+     * {@code setHandler()} that nothing ever called, so the field was null for the life of the
+     * process: the executor below threw {@link NullPointerException} the instant a capture session
+     * finished configuring, which killed the app the moment the camera opened and read, on the
+     * phone, as a black preview with no camera and no sensors.
+     *
+     * <p>It is a background thread and not the main looper because per-frame metadata arrives at
+     * the frame rate, and the frame index and its timestamp are the two values the desktop pairs
+     * poses against — they must not be queued behind whatever the interface is doing.
+     */
+    /** Quarter turns the operator has added to the preview. Recording is unaffected. */
+    private int previewTurn;
+
+    public void setPreviewTurn(int turn) {
+        this.previewTurn = ((turn % 4) + 4) % 4;
+    }
+
+    private final android.os.HandlerThread cameraThread;
+
+    private final android.os.Handler handler;
 
     private Executor executor() {
         return new Executor() {
@@ -552,20 +582,42 @@ public final class CameraController {
         if (viewWidth == 0 || viewHeight == 0) {
             return;
         }
-        int rotate = previewRotation(displayRotation);
+        // The turn is the operator's, not a derived constant, and that is deliberate.
+        // previewRotation() is right for MediaRecorder.setOrientationHint() and for the
+        // manifest, because nothing has rotated a recorded frame yet. The preview is a
+        // different problem: Flutter hosts this TextureView inside a virtual display that
+        // has already applied a rotation of its own, and how much it applies is not
+        // something this code can read. +90, -90 and +270 were each tried on a device and
+        // every one left the image on its side, so deriving the angle here is guessing
+        // with extra steps. A button that turns the preview a quarter at a time, and
+        // remembers where it was left, is both the honest answer and the one that keeps
+        // working on a handset whose compositor behaves differently.
+        int rotate = (previewTurn * 90) % 360;
         RectF viewRect = new RectF(0, 0, viewWidth, viewHeight);
         float centerX = viewRect.centerX();
         float centerY = viewRect.centerY();
 
-        RectF bufferRect = new RectF(0, 0, videoSize.getWidth(), videoSize.getHeight());
+        // Swapped when the image is going to be turned a quarter turn, because this
+        // rectangle describes the buffer *as it will be shown*, not as it arrives. Built
+        // from the unswapped dimensions it asks setRectToRect for a non-uniform scale
+        // computed against the wrong axis, and the rotation that follows then lands on
+        // an image that has already been squeezed along the axis it is about to become.
+        // At an even number of quarter turns the landscape buffer is presented portrait,
+        // so the rectangle this matrix must match is the swapped one; at an odd number it
+        // is presented landscape and must not be swapped. Getting this wrong is what
+        // squeezes a 16:9 image into a 9:16 box in a way no later step can undo.
+        boolean portraitPresentation = previewTurn % 2 == 0;
+        RectF bufferRect = portraitPresentation
+                ? new RectF(0, 0, videoSize.getHeight(), videoSize.getWidth())
+                : new RectF(0, 0, videoSize.getWidth(), videoSize.getHeight());
         bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY());
 
         Matrix matrix = new Matrix();
         matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL);
         matrix.postRotate(rotate, centerX, centerY);
 
-        float shownWidth = (rotate % 180 == 0) ? videoSize.getWidth() : videoSize.getHeight();
-        float shownHeight = (rotate % 180 == 0) ? videoSize.getHeight() : videoSize.getWidth();
+        float shownWidth = portraitPresentation ? videoSize.getHeight() : videoSize.getWidth();
+        float shownHeight = portraitPresentation ? videoSize.getWidth() : videoSize.getHeight();
         float scale = Math.min(viewWidth / shownWidth, viewHeight / shownHeight);
         matrix.postScale(scale, scale, centerX, centerY);
 

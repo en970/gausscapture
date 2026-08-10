@@ -104,16 +104,20 @@ public final class CaptureEngine implements SensorLogger.MotionSink {
     private String finishedReason;
     private boolean finishedByAbort;
 
+    /** Quarter turns the operator has added to the preview. Display only; see nudgePreviewTurn. */
+    private int previewTurn;
+
     /**
-     * Where the chosen protocol is remembered.
+     * Where the chosen protocol and the preview orientation are remembered.
      *
-     * <p>It was not remembered at all before. The operator picked C, the process was recreated for
-     * any of the ordinary reasons, and the next take was silently written as A -- and a
-     * mislabelled capture is not a weaker data point, it is a wrong one. Preset's own
+     * <p>The protocol was not remembered at all before. The operator picked C, the process was
+     * recreated for any of the ordinary reasons, and the next take was silently written as A --
+     * and a mislabelled capture is not a weaker data point, it is a wrong one. Preset's own
      * documentation makes that argument; this is the case it did not defend against (audit D26).
      */
     private static final String PREFERENCES = "gausscapture";
     private static final String KEY_PRESET = "preset";
+    private static final String KEY_PREVIEW_TURN = "preview_turn";
 
     private File sessionDir;
     private Preset preset = Preset.ALL[0];
@@ -135,6 +139,35 @@ public final class CaptureEngine implements SensorLogger.MotionSink {
         if (remembered != null) {
             setPreset(remembered);
         }
+        previewTurn = activity.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                .getInt(KEY_PREVIEW_TURN, 0);
+    }
+
+    /**
+     * Turn the preview a quarter and remember it.
+     *
+     * <p>Which way the preview has to be turned depends on how the platform's compositor
+     * presents the surface, and that is not something this process can read: the derived
+     * angle was tried at every quarter and each one left the image on its side on this
+     * handset. So the operator sets it once, it is kept across launches, and it is stored
+     * in the manifest so a take carries the orientation it was framed at.
+     *
+     * <p>This changes what is displayed and nothing else. The recording, its
+     * orientation hint and the intrinsics are untouched.
+     */
+    public int nudgePreviewTurn() {
+        previewTurn = (previewTurn + 1) % 4;
+        activity.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+                .edit().putInt(KEY_PREVIEW_TURN, previewTurn).apply();
+        if (camera != null) {
+            camera.setPreviewTurn(previewTurn);
+            camera.applyTransform(displayRotation());
+        }
+        return previewTurn;
+    }
+
+    public int previewTurn() {
+        return previewTurn;
     }
 
     public void setEvents(Events events) {
@@ -188,7 +221,15 @@ public final class CaptureEngine implements SensorLogger.MotionSink {
 
     /** Bind to the preview surface Flutter is hosting, and open the camera behind it. */
     public void attachPreview(TextureView view, CameraController.Listener listener) {
+        // Flutter recreates the platform view on rotation and on returning from the
+        // background, so this runs more than once per session. Each controller owns a
+        // callback thread; dropping the previous one on the floor would leak a thread
+        // per attach, and the abandoned one would still hold the camera device.
+        if (camera != null) {
+            camera.dispose();
+        }
         camera = new CameraController(activity, view, cameraManager, listener);
+        camera.setPreviewTurn(previewTurn);
         camera.setRecorderProblem(new CameraController.RecorderProblem() {
             @Override
             public void onRecorderProblem(String message, boolean fatal) {

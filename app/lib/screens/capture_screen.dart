@@ -341,6 +341,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
           if (!recording) _brief(padding),
           if (recording) _letterChip(padding),
+          if (!recording) _rotateButton(padding),
           if (recording && scripted) _rail(padding),
           if (!recording) _readiness(padding),
 
@@ -455,6 +456,34 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 ),
               ],
             ],
+          ),
+        ),
+      );
+
+  /// Turns the preview a quarter at a time.
+  ///
+  /// The correct turn depends on how the platform composites the preview surface, and the app
+  /// cannot read that: every derived angle was tried on a device and each one left the image on
+  /// its side. So the operator sets it, once, and it is remembered across launches. Display only
+  /// -- the recording, its orientation hint and the intrinsics are untouched. Hidden during a
+  /// take, because nothing that changes what is on screen belongs within reach while recording.
+  Widget _rotateButton(EdgeInsets padding) => Positioned(
+        top: padding.top + Space.md,
+        right: Space.gutter,
+        child: GestureDetector(
+          onTap: () async {
+            await widget.engine.nudgePreviewTurn();
+            HapticFeedback.selectionClick();
+          },
+          child: Container(
+            width: Touch.pill,
+            height: Touch.pill,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Palette.scrim,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.screen_rotation_outlined, size: 22, color: Palette.secondary),
           ),
         ),
       );

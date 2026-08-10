@@ -24,6 +24,14 @@ class CaptureEngine {
   /// The platform view id the preview widget instantiates.
   static const previewViewType = 'gausscapture/preview';
 
+  /// Turn the preview a quarter clockwise and remember it.
+  ///
+  /// Display only: the recording, its orientation hint and the intrinsics are untouched.
+  /// Which turn is correct depends on how the platform composites the preview surface, and
+  /// that is not readable from here — so the operator sets it once and it persists.
+  Future<int> nudgePreviewTurn() async =>
+      await _commands.invokeMethod<int>('nudgePreviewTurn') ?? 0;
+
   final _problems = StreamController<String>.broadcast();
   final _status = StreamController<CaptureStatus>.broadcast();
   final _finished = StreamController<FinishedTake>.broadcast();
