@@ -137,8 +137,18 @@ final class PhaseMachine {
             }
         }
         if (inPhase >= nominal) {
-            if (motion.sweptDeg >= preset.arcFloorDeg || inPhase >= ceiling) {
+            if (motion.sweptDeg >= preset.arcFloorDeg) {
                 advance();
+            } else if (inPhase >= ceiling) {
+                // Ending the take rather than carrying on without the sweep. This used to
+                // advance at the ceiling whatever the angle, and the result was a take that
+                // looked complete and could not be reconstructed: the arc is where the
+                // geometry comes from, so a capture without it is not a weaker capture, it
+                // is an unusable one. A real take measured 0.34 degrees here, ran to the end
+                // and was only found to be worthless on the desktop half an hour later.
+                abort("The sweep never got wide enough — "
+                        + Math.round(motion.sweptDeg) + "° of " + preset.arcFloorDeg + "°. "
+                        + "Carry the phone around your face, keeping your head still.");
             } else {
                 // Short of the floor: keep going rather than accept a cone too narrow to label.
                 warning = "Sweep wider";

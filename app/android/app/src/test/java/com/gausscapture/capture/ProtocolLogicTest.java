@@ -176,8 +176,18 @@ public final class ProtocolLogicTest {
         is("the sweep runs past its nominal length", "arc", atNominal[0]);
         is("and asks for more rather than accepting a cone too narrow to label", "Sweep wider",
                 atNominal[1]);
-        is("but not for ever: the ceiling takes whatever was swept", "reseat", pastCeiling[0]);
-        is("the take still completes", PhaseMachine.REASON_COMPLETE, machine.finishedReason());
+        // And at the ceiling it ends the take instead of carrying on without the sweep.
+        // Advancing here is what a real capture did: 0.34 degrees swept, all four phases
+        // recorded, twenty-six seconds spent, and nothing reconstructable at the end of it.
+        // The arc is where the geometry comes from -- a take without it is not a weaker
+        // sample, it is an unusable one, and finding that out on the desktop half an hour
+        // later is the expensive way to learn it. Deliberately-bad captures are still
+        // available; that is what preset D is for, and it is labelled as such.
+        is("the ceiling ends the take rather than accepting a cone too narrow to label",
+                null, pastCeiling[0]);
+        is("and it aborts rather than reporting a complete take", true, machine.aborted());
+        contains("naming the angle it got and what to do instead",
+                machine.finishedReason(), "25° of 40°");
     }
 
     private static void pivotIsCalledOut() {
@@ -489,6 +499,16 @@ public final class ProtocolLogicTest {
         if (expected == null ? actual != null : !expected.equals(actual)) {
             failures++;
             System.out.println("FAIL  " + what + ": expected " + expected + ", got " + actual);
+        }
+    }
+
+    /** For messages the operator reads: the wording is free, the fact it carries is not. */
+    private static void contains(String what, String actual, String needle) {
+        checks++;
+        if (actual == null || !actual.contains(needle)) {
+            failures++;
+            System.out.println("FAIL  " + what + ": expected text containing \"" + needle
+                    + "\", got " + actual);
         }
     }
 

@@ -1,7 +1,11 @@
 # Şu an
 
-**v0.3.0 yayında.** CI altı job'da yeşil, release kesildi, APK ve checksum GitHub'da,
-site canlı ve checksum'ı otomatik doldu. Geriye tek şey kaldı: APK'yi telefona kurmak.
+Yazılım tarafı bitti ve telefonda çalışıyor. **Tek eksik: kullanılabilir bir çekim.**
+Elde iki çekim var, ikisi de birbirini tamamlayan sebeplerden ötürü işe yaramıyor —
+gece çekiminde yay doğru (72,8°) ama telefon desteğe oturmadığı için `hold` fazı hiç
+başlamamış; gündüz çekiminde dört faz da tam ama arc'ta yay çizilmemiş (0,34°, ham
+gyro'dan doğrulandı: 19,7° toplam yol, net dönüş sıfır — sadece el titremesi).
+Paralaks olmadan COLMAP'in çözecek bir şeyi yok.
 
 # Sıradaki adım
 
