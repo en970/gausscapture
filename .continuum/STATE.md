@@ -9,29 +9,24 @@ Paralaks olmadan COLMAP'in çözecek bir şeyi yok.
 
 # Sıradaki adım
 
-**Önizleme oryantasyonu çözülmedi — tek kalan engel bu.** APK telefonda kurulu ve kamera
-çalışıyor, ama görüntü 90° yanlış yönde. `CameraController.applyTransform()` içinde
-denenenler ve kullanıcının gördüğü:
+**Kullanılabilir bir çekim bekleniyor. Yazılımda bilinen engel kalmadı.**
 
-| # | rotate | bufferRect | sonuç |
-|---|---|---|---|
-| 1 | +90 | normal | yan |
-| 2 | -90 | normal | yan (1'e göre 180° dönük) |
-| 3 | 0 | normal | karanlık kare, doğrulanamadı |
-| 4 | +90 | takaslı (Google Camera2Basic biçimi) | **şu an kurulu, geri bildirim bekleniyor** |
+Telefon bağlanınca: yeni APK `app/build/app/outputs/flutter-apk/app-release.apk` içinde
+build edilmiş halde duruyor, `adb install -r` ile kur. Sonra tek çekim yeterli — arc
+fazında yay 40°'yi geçmezse uygulama artık çekimi kendisi bitirip kaç derece olduğunu
+söylüyor, yani kullanılamaz veri toplanmıyor.
 
-Kanıtlanmış olan: `TextureView.setTransform` bu barındırma modunda **yok sayılmıyor** —
-matrise geçici olarak `postScale(0.5)` konduğunda önizleme ekranın ortasında dik ve doğru
-oranlı bir dikdörtgene indi. Yani sorun matrisin uygulanmaması değil, içeriğinin yanlış
-olması.
+Çekim gelince: `pull` → `prep4d` → Kaggle'da eğitim → `export4d` → `viewer4d`.
 
-4 de çözmezse sıradaki yol: TextureView matrisini kimliğe indirip döndürmeyi Flutter
-tarafında yapmak — `app/lib/screens/capture_screen.dart:651` içindeki çıplak `AndroidView`
-şu an `Stack(fit: StackFit.expand)` içinde tam ekrana zorlanıyor; `RotatedBox` +
-`AspectRatio` ile sarmak oryantasyonu platform view barındırmasından bağımsız kılar.
+Önizleme oryantasyonu **çözüldü**: matris döndürmüyor (sanal ekran dönüşü zaten uyguluyor),
+yalnızca en-boy düzeltmesi yapıyor — `bufferRect` ve `shownWidth/Height` takaslı. Ayrıca
+sağ üstte çeyrek tur çeviren, tercihi kalıcı saklayan bir buton var; başka bir cihaz farklı
+davranırsa türetilmiş bir sabiti kırmak yerine bu tercih doğru kalır.
 
-Bundan sonra: dört fazlı çekim (perch → arc → reseat → hold), `pull`, `prep4d`, Colab'da
-`train4d`, `export4d`, `viewer4d`.
+Kanıt niteliğinde ölçüm (bir daha aynı yolu denememek için): `TextureView.setTransform` bu
+barındırma modunda **yok sayılmıyor** — matrise geçici `postScale(0.5)` konduğunda önizleme
+ekranın ortasında dik ve doğru oranlı bir dikdörtgene indi. +90, -90 ve +270 hepsi görüntüyü
+yan bıraktı; doğru olan 0 idi.
 
 # Yayınlananlar
 
