@@ -121,6 +121,7 @@ On Apple Silicon there is no CUDA path. [Brush](https://github.com/ArthurBrussee
 | Document | Contents |
 |---|---|
 | [**RESEARCH.md**](docs/RESEARCH.md) | The technical report: competitive landscape, what is licensed, why stationary-phone 4D is physically bounded, the proposed contribution, evaluation protocol |
+| [**DYNAMIC_LANDSCAPE.md**](docs/DYNAMIC_LANDSCAPE.md) | Who else does fixed-camera and monocular dynamic capture, how, and what it costs them (August 2026) |
 | [**ROADMAP.md**](docs/ROADMAP.md) | Twelve sprints with go/no-go criteria, and what is explicitly out of scope |
 | [**EXPERIMENTS.md**](docs/EXPERIMENTS.md) | What was actually run and what it showed, negative results included |
 | [**DEPENDENCIES.md**](docs/DEPENDENCIES.md) | Bundled vs. invoked classification; the repositories that declare permissive licences while shipping encumbered code |
